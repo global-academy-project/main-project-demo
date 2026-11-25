@@ -180,6 +180,47 @@ Qdrant in the data layer):
   `.env` file through `${...}` variables.
 - **Monitoring** — Grafana and Prometheus are for local use only.
 
+### Docker image strategy and trade-offs
+
+![Docker image · Multi-stage build](./docs/images/docker-multistage.png)
+
+- **Multi-stage builds** — Build-only tooling stays out of the runtime images:
+  Spring ships only a JRE, the embedding image keeps no wheelhouse or pip cache,
+  and ingest installs lightweight dependencies without PyTorch or Transformers.
+  `ai` and `embedding` share one `ml-dependencies` stage.
+- **Trade-off** — Smaller runtime images and a smaller attack surface come at the
+  cost of more stages and cache rules to maintain. Stage names must match the
+  Compose `target` names (aliases are lowercase).
+
+![Docker image · Base image selection](./docs/images/docker-base-images.png)
+
+Base images are pinned per service (`node:24.22.2-alpine3.24`,
+`eclipse-temurin:17-jdk/jre-resolute`, `python:3.12.15-slim`).
+
+- **Decision: Resolute over Noble** — Noble (Ubuntu 24.04 LTS) is about 53–55 MB
+  smaller (JRE base 376.76 MB vs 432.11 MB; built Spring image 507.74 MB vs
+  561.23 MB), but Resolute (26.04 LTS) has a longer support period, which was
+  prioritized over size.
+- **Caveat** — Build times (61.5 s vs 28.1 s) were not compared because download
+  and cache states differed. Tags are not immutable, so pin digests and define a
+  refresh procedure if reproducibility is required.
+
+### AI service load test
+
+![AI service load test · Docker Compose](./docs/images/ai-load-test.png)
+
+Each run sent 100 requests (50 tagging, 50 rule-input extraction) with CPU
+inference on a Ryzen 7 9700X and Docker 16 CPU / 14.9 GiB. All 400 responses
+were HTTP 200.
+
+- **Trade-off** — Concurrency 2 gave the best result (0.24 req/s, 8.15 s average).
+  Concurrency 4 and 8 stayed at 0.23 req/s while average latency rose to 16.75 s
+  and 32.32 s, so higher concurrency only adds latency on this CPU-bound workload.
+- **Limitations** — The run order was 1 → 2 → 8 → 4, so concurrency 1 may
+  reflect warm-up effects. Response correctness is unverified, and p95 is not
+  comparable for 4 and 8 because of the 10 s bucket limit. Next: repeat with a
+  changed run order and record Grafana time series.
+
 ### Kubernetes topology
 
 ![Container Platform · Kubernetes](./docs/images/kubernetes.png)

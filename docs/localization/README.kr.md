@@ -169,6 +169,44 @@ Prometheus와 Grafana로 수집합니다.
 - **설정** — 접속 정보는 `.env` 파일의 `${...}` 변수로 컨테이너에 주입됩니다.
 - **모니터링** — Grafana와 Prometheus는 로컬 전용입니다.
 
+### Docker 이미지 전략과 트레이드오프
+
+![Docker 이미지 · 멀티 스테이지 구성](../images/docker-multistage.kr.png)
+
+- **멀티 스테이지 빌드** — 빌드 전용 도구를 런타임 이미지에서 제외합니다. Spring은
+  JRE만 포함하고, 임베딩 이미지에는 wheelhouse와 pip 다운로드 캐시를 남기지 않으며,
+  ingest는 PyTorch·Transformers 없이 경량 의존성만 설치합니다. `ai`와
+  `embedding`은 `ml-dependencies` 스테이지를 공유합니다.
+- **트레이드오프** — 런타임 이미지와 공격 표면이 작아지는 대신 관리할 스테이지와
+  캐시 규칙이 늘어납니다. 스테이지 이름은 Compose `target`과 일치해야 합니다(별칭은
+  소문자로 통일).
+
+![Docker 이미지 · 베이스 이미지 선택](../images/docker-base-images.kr.png)
+
+서비스별 베이스 이미지는 명시해 둡니다(`node:24.22.2-alpine3.24`,
+`eclipse-temurin:17-jdk/jre-resolute`, `python:3.12.15-slim`).
+
+- **결정: Noble 대신 Resolute** — Noble(Ubuntu 24.04 LTS)이 약 53~55MB 더 작지만
+  (JRE 베이스 376.76MB 대 432.11MB, 빌드된 Spring 이미지 507.74MB 대 561.23MB),
+  지원 기간이 더 긴 Resolute(26.04 LTS)를 용량보다 우선했습니다.
+- **주의점** — 빌드 시간(61.5초 대 28.1초)은 다운로드·캐시 상태가 달라 비교
+  자료로 쓰지 않았습니다. 태그는 digest처럼 불변이 아니므로, 재현성이 필요하면
+  digest 고정과 갱신 절차를 검토합니다.
+
+### AI 서비스 부하 테스트
+
+![AI 서비스 부하 테스트 · Docker Compose](../images/ai-load-test.kr.png)
+
+매 실행마다 요청 100건(아차사고 태깅 50건, 규칙 입력 추출 50건)을 Ryzen 7 9700X
+CPU 추론, Docker 16 CPU / 14.9GiB 환경에서 보냈고, 400건 모두 HTTP 200이었습니다.
+
+- **트레이드오프** — 동시성 2가 가장 좋았습니다(0.24건/초, 평균 8.15초). 동시성
+  4·8은 처리량이 0.23건/초로 그대로인 반면 평균 응답은 16.75초, 32.32초로
+  늘어, CPU 중심 워크로드에서는 동시성을 높여도 지연만 커집니다.
+- **한계** — 실행 순서가 1 → 2 → 8 → 4라 동시성 1은 예열 영향이 있을 수 있습니다.
+  응답 정확성은 미검증이며, p95는 10초 버킷 한계로 4·8을 비교할 수 없습니다.
+  다음 단계로 순서를 바꿔 반복 측정하고 Grafana 시계열을 기록합니다.
+
 ### Kubernetes 구성
 
 ![컨테이너 플랫폼 · Kubernetes](../images/kubernetes.kr.png)
