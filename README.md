@@ -26,6 +26,36 @@ deployment are managed in the infrastructure repository.
 - **Integrated operations** — one-command local run via Docker Compose, a
   Kubernetes/Kustomize deployment, and Prometheus + Grafana monitoring.
 
+## Screenshots
+
+> [!NOTE]
+> The web UI is currently available in Korean only. Screenshots use demo data.
+
+### Dashboard
+
+![Dashboard](./docs/images/web-dashboard.png)
+
+The home screen summarizes the day at a glance: work status, today's to-dos
+(including TBM, the pre-work safety briefing), pending approvals, a timeline of
+scheduled work, and the AI assistant panel.
+
+### AI assistant
+
+![AI assistant](./docs/images/web-ai-assistant.png)
+
+Operators can register work in plain conversation. The assistant asks for missing
+details (such as work hours) and creates draft work items, along with the related
+risk assessment, high-place work permit, and TBM, to review before requesting
+approval. Voice input is also available.
+
+### Audit report
+
+![Audit report](./docs/images/web-audit-report.png)
+
+Monthly audit-response reports combine key metrics (planned/completed work,
+approvals, risk-assessment completion rate) with an AI-written summary opinion
+that reviewers can edit before exporting.
+
 ## Architecture Overview
 
 ![System Architecture](./docs/images/system-architecture.png)
