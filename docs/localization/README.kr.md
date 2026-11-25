@@ -131,7 +131,7 @@ docker compose --env-file .\docker\.env -f .\docker\docker-compose.yml up -d --b
 ```
 
 필수 환경 변수, 컨테이너 간 연결 주소, 초기화 작업은
-[infra-manage의 Docker 실행 가이드](../../infra-manage/docker/README.md)를
+[infra-manage의 Docker 실행 가이드](infra-manage-docker.README.kr.md)를
 참고하세요.
 
 ## 배포·운영
@@ -232,10 +232,10 @@ CPU 추론, Docker 16 CPU / 14.9GiB 환경에서 보냈고, 400건 모두 HTTP 2
 
 각 저장소를 개별적으로 개발·테스트하려면 해당 저장소의 README를 참고하세요.
 
-- 웹: [vite-web/README.md](../../vite-web/README.md) — `npm ci` 후 `npm run dev`
-- 서버: [spring-server/README.md](../../spring-server/README.md) — `\.\gradlew.bat bootRun`
-- AI: [ai-model/README.md](../../ai-model/README.md) — `.venv` 생성 후 `uvicorn`
-- 인프라: [infra-manage/README.md](../../infra-manage/README.md) — Compose·Kubernetes
+- 웹: [vite-web README](vite-web.README.kr.md) — `npm ci` 후 `npm run dev`
+- 서버: [spring-server README](spring-server.README.kr.md) — `\.\gradlew.bat bootRun`
+- AI: [ai-model README](ai-model.README.kr.md) — `.venv` 생성 후 `uvicorn`
+- 인프라: [infra-manage README](infra-manage.README.kr.md) — Compose·Kubernetes
 
 ## 협업 인원
 

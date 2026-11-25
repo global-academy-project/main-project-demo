@@ -49,7 +49,7 @@ Qdrant 및 임베딩 연결 정보를 채워야 합니다. 의존 서비스가 �
 
 ## Docker 이미지
 
-[Dockerfile](Dockerfile)은 CPU 전용 런타임 이미지를 제공합니다. AI API target의
+[Dockerfile](../../ai-model/Dockerfile)은 CPU 전용 런타임 이미지를 제공합니다. AI API target의
 이름은 `api`가 아니라 `ai`입니다. 저장소 루트에서 필요한 이미지를 빌드합니다.
 
 ```powershell
@@ -62,7 +62,7 @@ docker build --target qdrant-init -t ai-model:qdrant-init .
 AI API와 임베딩 API는 모델 다운로드/캐시와 연동 API 설정이 필요합니다.
 임베딩 API는 초기화 완료 후 `/ready`, AI API는 `/health`, 지식 적재 API는
 `/ready`에서 상태를 확인할 수 있습니다. 통합 Docker Compose 구성과 필요한 환경
-변수는 [`infra-manage`의 Docker 실행 가이드](../infra-manage/docker/README.md)를 참고하세요.
+변수는 [`infra-manage`의 Docker 실행 가이드](infra-manage-docker.README.kr.md)를 참고하세요.
 
 ## 의존성 파일
 
@@ -90,7 +90,7 @@ AI API와 임베딩 API는 모델 다운로드/캐시와 연동 API 설정이 �
 
 ## 평가 및 도메인 문서
 
-평가 데이터의 형식과 실행 방법은 [`eval/README.md`](eval/README.md)를 참고하세요.
+평가 데이터의 형식과 실행 방법은 [`평가 README`](ai-model-eval.README.kr.md)를 참고하세요.
 사내 아차사고 규칙 태깅과 RAG 검색 계약은
-[`docs/NEAR_MISS_AI_TAGGING-v5.0.0.md`](docs/NEAR_MISS_AI_TAGGING-v5.0.0.md)에
+[`아차사고 AI 태깅 규칙`](../../ai-model/docs/NEAR_MISS_AI_TAGGING-v5.0.0.md)에
 정리되어 있습니다.

@@ -22,7 +22,7 @@ main-project-demo/
 ```
 
 `docker/.env`를 로컬에서 만들고 필요한 변수와 비밀 값을 입력합니다.
-필수 변수 목록과 서비스별 동작은 [Docker 실행 가이드](docker/README.md)에
+필수 변수 목록과 서비스별 동작은 [Docker 실행 가이드](infra-manage-docker.README.kr.md)에
 정리되어 있습니다. 저장소에 실제 비밀번호, 토큰 또는 API 키를 커밋하지 마세요.
 
 저장소 루트에서 Compose 설정을 검증하고 서비스를 실행합니다.
@@ -34,14 +34,14 @@ docker compose --env-file .\docker\.env -f .\docker\docker-compose.yml ps -a
 ```
 
 컨테이너 간 연결 주소와 호스트 공개 포트, 초기화 작업, 로그 확인 절차는
-[Docker 실행 가이드](docker/README.md)를 참고하세요. 개발용 데이터베이스만
+[Docker 실행 가이드](infra-manage-docker.README.kr.md)를 참고하세요. 개발용 데이터베이스만
 실행하는 `docker-compose.dev.yml` 구성은 아래의 개발 DB 보관 안내를 따릅니다.
 
 ## Kubernetes
 
 `kubernetes/`에는 Compose 구성을 옮기기 위한 로컬 배포 초안이 있습니다.
 Docker Desktop Kubernetes 등의 클러스터와 `kubectl`을 준비하고
-[Kubernetes 가이드](kubernetes/README.md)의 이미지, Secret, 스토리지 요구사항을
+[Kubernetes 가이드](infra-manage-kubernetes.README.kr.md)의 이미지, Secret, 스토리지 요구사항을
 확인하세요. 실제 비밀은 로컬에서 안전하게 관리하고 Git에 커밋하지 않습니다.
 
 ### 로컬 빌드와 배포
@@ -100,7 +100,7 @@ kubectl logs deployment/spring-server | Select-String "admin"
 관리자가 이미 있거나 Pod가 재시작됐다면 생성 로그가 없을 수 있습니다. Secret
 변경만으로 기존 관리자 비밀번호는 바뀌지 않습니다.
 
-배포 문제와 진단 명령은 [로컬 Kubernetes 문제 기록](kubernetes/TROUBLESHOOTING.md)을
+배포 문제와 진단 명령은 [로컬 Kubernetes 문제 기록](../../infra-manage/kubernetes/TROUBLESHOOTING.md)을
 참고하세요. Secret 값이나 민감한 로그는 공유하지 않습니다.
 
 ### Kubernetes CPU와 메모리 산정

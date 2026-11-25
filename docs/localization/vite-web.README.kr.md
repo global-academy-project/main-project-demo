@@ -46,7 +46,7 @@ npm run preview
 
 기본 [Dockerfile](Dockerfile)은 Vite preview 서버를 포트 `50001`에서 실행합니다.
 여러 저장소를 함께 실행하는 Compose 환경과 웹 배포 설정은
-[`infra-manage`](../infra-manage) 저장소에서 관리합니다.
+[`infra-manage`](infra-manage.README.kr.md) 문서에서 관리합니다.
 
 ## 디렉터리
 
