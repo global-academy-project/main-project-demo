@@ -1,6 +1,5 @@
 # Private
 .env
-.env.*
 /docs/private-attachment
 ai-model/docs/private-attachment/
 infra-manage/docs/private-attachment/
