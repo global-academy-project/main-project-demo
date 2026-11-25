@@ -1,5 +1,8 @@
 # Prometheus metrics wrapper
 
+> [!NOTE]
+> English version: [Metrix README](../../ai-model/metrix/README.md)
+
 This directory provides an isolated Prometheus instrumentation layer for the existing AI FastAPI application.
 It does not modify the existing application entrypoint or dependency manifests.
 
