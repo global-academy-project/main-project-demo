@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # 공통 설정 및 시크릿
+  # - common-config.yaml
+  # - common-secret.yaml
+  # - common-volume.yaml
+  # - ../base
+  # MySQL 관련 리소스
+  - statefulset.yaml
+  - service.yaml
+  - job.yaml
+  - seed-job.yaml
+
+configMapGenerator:
+  - name: mysql-init-scripts
+    files:
+      - db/init/10-agent-kb.sh
+
+  - name: mysql-verify-files
+    files:
+      - db/verify/container-delivery-insert-db.sql
+      - db/verify/verify.sh
+
+  - name: report-dummy-data
+    files:
+      - db/report-dummy-data/seed_audit_oct2026_check.sql
+      - db/report-dummy-data/seed_audit_oct2026_cleanup.sql
+      - db/report-dummy-data/seed_audit_oct2026.sql
+
+  - name: kb-migration-config
+    files:
+      - db/migration/V1__kb_init.sql
+      - db/migration/V2__eval.sql

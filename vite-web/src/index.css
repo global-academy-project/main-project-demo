@@ -1,0 +1,123 @@
+:root {
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  color: #243B53;
+  background: #F7F9FC;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  padding: 15px 18px;
+  border: 0;
+  border-radius: 12px;
+  color: #FFFFFF;
+  background: #102A43;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  background: #243B53;
+  transform: translateY(1px);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button:focus-visible {
+  outline: 3px solid rgba(217, 119, 6, 0.3);
+  outline-offset: 2px;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.page-message {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+  gap: 16px;
+  padding: 24px;
+  text-align: center;
+}
+
+.field-error {
+  color: #b42318;
+  font-size: 0.875rem;
+}
+
+.dark-mode {
+  color-scheme: dark;
+}
+
+.dark-mode body,
+.dark-mode #root,
+.dark-mode .page-message {
+  color: #e5e7eb;
+  background: #111827;
+}
+
+.dark-mode input,
+.dark-mode select,
+.dark-mode textarea {
+  border-color: #4b5563;
+  color: #f3f4f6;
+  background: #1f2937;
+}
+
+.dark-mode input[readonly] {
+  color: #cbd5e1;
+  background: #273548;
+}
+
+.dark-mode .field-error {
+  color: #fda4af;
+}
+
+/* 생성한 파일
+- index.css: 애플리케이션의 전역 스타일을 정의하는 CSS 파일
+- 다른 파일들과의 관계
+- App.jsx: index.css를 import하여 전역 스타일을 적용
+*/

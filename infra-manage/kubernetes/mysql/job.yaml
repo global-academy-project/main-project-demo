@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mysql-migration-job
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: mysql-migration-container
+        image: flyway/flyway:13.12-alpine
+        env:
+        - name: FLYWAY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: common-kb-secret
+              key: KB_OWNER_PASSWORD
+        volumeMounts:
+        - name: kb-migration-config
+          mountPath: /flyway/sql
+          readOnly: true
+        args:
+          - -url=jdbc:mysql://mysql-service:3306/agent_kb?allowPublicKeyRetrieval=true
+          - -user=kb_owner
+          - -validateMigrationNaming=true
+          - -connectRetries=60
+          - migrate
+      volumes:
+      - name: kb-migration-config
+        configMap:
+          name: kb-migration-config

@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kb-ingest
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: kb-ingest
+  template:
+    metadata:
+      labels:
+        app: kb-ingest
+    spec:
+      securityContext:
+        fsGroup: 65003
+      containers:
+      - name: kb-ingest
+        image: kb-ingest:20261125100632942
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8001
+        envFrom:
+        - configMapRef:
+            name: common-embedding-config
+        - configMapRef:
+            name: common-kb-config
+        - secretRef:
+            name: common-embedding-secret
+        env:
+        - name: QDRANT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: common-qdrant-secret
+              key: QDRANT__SERVICE__API_KEY
+        - name: KB_INGEST_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: common-kb-secret
+              key: KB_INGEST_PASSWORD
+        - name: KB_INGEST_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: kb-option-config
+              key: KB_INGEST_API_TOKEN
+        - name: QDRANT_URL
+          value: http://qdrant-service:6333
+        - name: EMBEDDING_URL
+          value: http://embedding-service:60110/v1/embeddings
+        - name: KB_DB_HOST
+          value: mysql-service
+        - name: KB_DB_PORT
+          value: "3306"
+        - name: RAG_SEARCH_TIMEOUT_SECONDS
+          value: "60"
+        - name: LOCAL_CHUNK_ROOT
+          value: /data/out
+        - name: LOCAL_VECTOR_DIR
+          value: /data/vectors
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          periodSeconds: 10
+        volumeMounts:
+        - name: ingest-data
+          mountPath: /data/out
+          subPath: out
+          readOnly: true
+        - name: ingest-data
+          mountPath: /data/vectors
+          subPath: vectors
+      volumes:
+      - name: ingest-data
+        persistentVolumeClaim:
+          claimName: shared-data-volume

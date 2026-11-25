@@ -1,0 +1,100 @@
+/* 공통 페이지 머리 (components/ui/page-header.jsx). 모든 화면에서 같은 자리·같은 크기. 값은 tokens.css 변수만 쓴다. */
+@import './tokens.css';
+
+.page-head-wrap { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-4); font-family: var(--font-sans); }
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3) var(--space-4); flex-wrap: wrap; min-height: 56px; }
+.page-head__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.page-head__title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin: 0; font-size: var(--text-2xl); line-height: 1.3; font-weight: 700; color: var(--color-text-strong); word-break: keep-all; }
+.page-head__badges { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.page-head__meta { margin: 0; font-size: var(--text-sm); color: var(--color-text-muted); word-break: keep-all; }
+.page-head__actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.page-head__actions label { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--color-text-sub); }
+.page-head__actions input, .page-head__site select {
+  min-height: var(--touch-min);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  color: var(--color-text-strong);
+  font-family: inherit;
+  font-size: var(--text-md);
+  box-sizing: border-box;
+}
+.page-head__site select { padding-right: var(--space-8); font-weight: var(--weight-bold); max-width: 260px; }
+.page-head__notice { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text-sub); font-size: var(--text-sm); }
+.page-head__notice--error { border-color: var(--color-danger-border); background: var(--color-danger-soft); color: var(--color-danger-text); }
+
+/* 태블릿·모바일: 버튼 줄은 늘 제목 아래 (버튼 개수와 상관없이 같은 자리) */
+@media (max-width: 1024px) {
+  .page-head { flex-direction: column; align-items: stretch; }
+  .page-head__actions { justify-content: flex-start; }
+  .page-head__site { margin-left: auto; }
+}
+
+@media (max-width: 640px) {
+  .page-head { align-items: stretch; }
+  .page-head__title { font-size: var(--text-xl); }
+  .page-head__actions { width: 100%; }
+  .page-head__actions > * { flex: 1 1 140px; min-width: 0; }
+  .page-head__site, .page-head__actions > label { flex-basis: 100%; margin-left: 0; order: -1; }
+  .page-head__site select, .page-head__actions input { width: 100%; max-width: none; }
+}
+
+/* 예전 화면 머리 틀(job-pages.css 의 .job-page-heading)이 공통 머리를 덮지 않도록 */
+div.job-page-heading { display: block !important; margin: 0 !important; }
+
+/* 예전 화면이 머리에 넣은 일반 버튼도 공통 버튼과 같은 높이·모양으로 (자리·줄 높이가 흔들리지 않게) */
+.page-head__actions button:not(.ui-btn):not(.ui-icon-btn) {
+  min-height: var(--touch-min);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-sub);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  transform: none;
+}
+.page-head__actions button:not(.ui-btn):not(.ui-icon-btn):hover:not(:disabled) { background: var(--color-surface-muted); transform: none; }
+.page-head__actions { align-items: center; }
+
+/* 예전 화면 CSS(.job-page-content .checklist-heading label 등)가 머리 안 조절칸을 덮지 않도록 우선순위를 높인다 */
+.dashboard-main .page-head .page-head__actions > label { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; font-size: var(--text-sm); color: var(--color-text-sub); }
+.dashboard-main .page-head .page-head__actions > label input { min-height: var(--touch-min); margin: 0; }
+
+/* ── 11/16 개편: 현장 선택은 머리 위 줄 오른쪽(알림 옆) ── */
+.header-site .page-head__site select {
+  min-height: 40px;
+  padding: 0 var(--space-8) 0 var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background-color: var(--color-surface);
+  color: var(--color-text-strong);
+  font-weight: var(--weight-bold);
+  font-size: var(--text-sm);
+  max-width: 240px;
+}
+.header-site .page-head__site--one {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text-strong);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .header-site .page-head__site select { max-width: 150px; padding-left: var(--space-3); }
+  .header-site .page-head__site--one { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+}
+.page-head__title { font-size: 26px; letter-spacing: -0.01em; }
+.page-head__meta { font-size: var(--text-sm); color: var(--color-text-muted); }
+/* 버튼 글자는 줄바꿈하지 않는다 (320px 포함) */
+.page-head__actions .ui-btn { white-space: nowrap; }
+/* 제목 위 작은 줄 (홈: "김현장님 · 2026. 11. 16 (월)") */
+.page-head__eyebrow { margin: 0 0 2px; color: var(--color-text-muted); font-size: var(--text-sm); }
+.page-head__eyebrow b { color: var(--color-text-strong); font-weight: 700; }

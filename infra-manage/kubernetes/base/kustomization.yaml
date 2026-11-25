@@ -1,0 +1,14 @@
+#### WARNING: Kustomize Base Directory Restriction
+# Kustomize는 기본적으로 각 Kustomization의 파일 참조를 해당 디렉터리 내부로
+# 제한한다. 다른 디렉터리에서는 개별 파일 대신 ../base처럼 Kustomization
+# 디렉터리를 참조한다. 이 제한은 Secret을 암호화하거나 접근을 통제하지 않는다.
+# Secret의 Base64 값은 암호화가 아니므로 실제 비밀은 별도로 안전하게 관리한다.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # 공통 설정 및 시크릿
+  - common-config.yaml
+  - common-secret.yaml
+  - common-volume.yaml

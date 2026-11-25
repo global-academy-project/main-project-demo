@@ -1,0 +1,110 @@
+FROM python:3.12.15-slim AS base
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+#-------------------------[Multi-stage build base image]---------------------------------------
+# Download the ML wheels once; BuildKit keeps pip's download cache outside image layers.
+FROM base AS ml-wheelhouse
+
+COPY requirements.txt requirements.release.txt ./
+COPY metrix/requirements.txt ./metrix/requirements.txt
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip download --only-binary=:all: --dest /tmp/wheels \
+        -r requirements.release.txt \
+        -r metrix/requirements.txt
+
+# Install ML dependencies offline from the wheelhouse.
+FROM base AS ml-dependencies
+
+COPY requirements.txt requirements.release.txt ./
+COPY metrix/requirements.txt ./metrix/requirements.txt
+
+RUN --mount=type=bind,from=ml-wheelhouse,source=/tmp/wheels,target=/tmp/wheels \
+    python -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --no-index \
+        --find-links=/tmp/wheels -r requirements.release.txt \
+        -r metrix/requirements.txt \
+    && /opt/venv/bin/python -m pip check \
+    && mkdir -p /models/adapters /models/yolox /models/huggingface \
+    && chown -R 65003:65003 /models/adapters /models/yolox /models/huggingface
+
+#-------------------------[Multi-stage build AI image]---------------------------------------
+FROM ml-dependencies AS ai
+
+RUN mkdir -p /models/stt && chown 65003:65003 /models/stt
+
+USER 65003:65003
+
+COPY app ./app
+COPY metrix ./metrix
+
+# Download and prepare AI models
+COPY ./scripts/download_models.py ./scripts/download_models.py
+
+RUN HF_HOME=/tmp/huggingface python ./scripts/download_models.py --dest /models --only vision \
+    && HF_HOME=/tmp/huggingface python ./scripts/download_models.py --dest /models/stt --only stt \
+    && rm -rf /tmp/huggingface
+
+EXPOSE 60100
+
+CMD ["uvicorn", "metrix.main:app", "--host", "0.0.0.0", "--port", "60100"]
+
+#-------------------------[Multi-stage build Embedding image]---------------------------------------
+FROM ml-dependencies AS embedding
+
+USER 65003:65003
+
+COPY app/rag/ ./app/rag/
+COPY app/publicdata/ ./app/publicdata/
+COPY app/chunking/ ./app/chunking/
+
+EXPOSE 60110
+
+CMD ["uvicorn", "app.rag.embedding_api:create_app", "--factory", "--host", "0.0.0.0", "--port", "60110"]
+
+#-------------------------[Multi-stage build Ingest image]---------------------------------------
+FROM base AS ingest-dependencies
+
+COPY requirements.ingest.txt ./
+
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir -r requirements.ingest.txt \
+    && /opt/venv/bin/python -m pip check
+
+FROM ingest-dependencies AS ingest
+
+USER 65003:65003
+
+COPY app/ingest_main.py ./app/
+COPY app/ingest/ ./app/ingest/
+COPY app/rag/ ./app/rag/
+COPY app/chunking/accident_ingest/ ./app/chunking/accident_ingest/
+COPY app/publicdata/ ./app/publicdata/
+
+EXPOSE 8001
+
+CMD ["uvicorn", "app.ingest_main:app", "--host", "0.0.0.0", "--port", "8001"]
+
+#-------------------------[Multi-stage build Qdrant init image]---------------------------------------
+
+FROM base AS qdrant-init
+
+
+COPY requirements.qdrant-init.txt ./
+
+RUN python -m venv /opt/venv \
+&& /opt/venv/bin/python -m pip install --no-cache-dir -r requirements.qdrant-init.txt \
+&& /opt/venv/bin/python -m pip check
+
+USER 65003:65003
+
+COPY ./scripts/init_qdrant.py ./scripts/init_qdrant.py
+
+CMD ["python", "-m", "scripts.init_qdrant"]
+
+#-------------------------[End of Dockerfile]---------------------------------------

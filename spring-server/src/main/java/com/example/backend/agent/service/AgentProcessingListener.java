@@ -1,0 +1,104 @@
+package com.example.backend.agent.service;
+
+import com.example.backend.agent.client.AgentCallException;
+import com.example.backend.agent.client.AgentClient;
+import com.example.backend.agent.client.AgentReply;
+import com.example.backend.agent.client.RecordQueryCall;
+import com.example.backend.agent.client.WorkRegisterCall;
+import com.example.backend.agent.entity.AgentRun;
+import com.example.backend.agent.entity.AgentRunStatus;
+import com.example.backend.agent.repository.AgentRunRepository;
+import com.example.backend.agent.entity.AgentTaskType;
+import com.example.backend.config.AsyncConfig;
+import com.example.backend.nearmiss.service.NearMissAutoTagService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+import tools.jackson.databind.json.JsonMapper;
+
+/**
+ * 커밋 이후(AFTER_COMMIT) 별도 스레드에서 AI 서버를 부르고, 저장은 AgentResultWriter 에 맡긴다.
+ * 커밋 후에 부르는 이유: AI 서버가 check_rules 를 부르면 판정 기록이 agent_runs.id 를 외래키로 건다 (계획서 7-2장).
+ * AI 호출은 오래 걸리므로(최대 app.agent.read-timeout-seconds) 트랜잭션 밖에서 한다.
+ * 실행 스레드는 에이전트 전용 실행기(AsyncConfig.AGENT_EXECUTOR, 크기 제한)를 쓴다.
+ * 예외는 RuntimeException 만 잡아 실패로 저장한다. JVM 오류(Error)는 잡지 않고 올려 보내며,
+ * 그 실행은 멈춘 실행 정리(AgentRunSweeper)가 AGENT_TIMEOUT 으로 정리한다.
+ */
+@Component
+public class AgentProcessingListener {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentProcessingListener.class);
+
+    private final AgentRunRepository runRepository;
+    private final AgentClient agentClient;
+    private final AgentResultWriter writer;
+    private final NearMissAutoTagService nearMissAutoTag;
+    private final JsonMapper jsonMapper;
+
+    public AgentProcessingListener(AgentRunRepository runRepository, AgentClient agentClient,
+                                   AgentResultWriter writer, NearMissAutoTagService nearMissAutoTag, JsonMapper jsonMapper) {
+        this.runRepository = runRepository;
+        this.agentClient = agentClient;
+        this.writer = writer;
+        this.nearMissAutoTag = nearMissAutoTag;
+        this.jsonMapper = jsonMapper;
+    }
+
+    @Async(AsyncConfig.AGENT_EXECUTOR)
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void handle(AgentRunRequestedEvent event) {
+        AgentRun run = runRepository.findById(event.runId()).orElse(null);
+        if (run == null || run.getStatus() != AgentRunStatus.PROCESSING) {
+            log.warn("처리할 실행이 없습니다. runId={}", event.runId());
+            return;
+        }
+        long started = System.nanoTime();
+        try {
+            AgentReply reply = call(run);
+            if (run.getTaskType() == AgentTaskType.NEAR_MISS_TAG) {
+                nearMissAutoTag.saveResult(run.getId(), reply.data(), elapsed(started));   // 아차사고 태그로 저장 (대화·단계 없음)
+            } else {
+                writer.saveSuccess(run.getId(), reply.data(), elapsed(started));
+            }
+        } catch (AgentCallException e) {
+            log.warn("AI 서버 실행 실패. runId={} code={}", run.getId(), e.getCode());
+            saveFailure(run.getId(), e.getCode(), e.getMessage(), e.getSteps(), started);
+        } catch (RuntimeException e) {
+            log.error("에이전트 실행 처리 실패. runId={}", run.getId(), e);
+            saveFailure(run.getId(), "AGENT_FAILED", "실행 결과를 처리하지 못했습니다.", null, started);
+        }
+    }
+
+    /** 실행 종류별 AI 서버 호출. 처리하지 않는 종류는 실패로 */
+    private AgentReply call(AgentRun run) {
+        return switch (run.getTaskType()) {
+            case WORK_REGISTER -> {
+                RunInput input = jsonMapper.readValue(run.getInputJson(), RunInput.class);
+                yield agentClient.workRegister(new WorkRegisterCall(run.getId(), run.getSiteId(),
+                        input.permitId(), input.message(), input.slots(), run.getMode().name()));
+            }
+            case RECORD_QUERY -> {
+                RecordQueryInput input = jsonMapper.readValue(run.getInputJson(), RecordQueryInput.class);
+                yield agentClient.recordQuery(new RecordQueryCall(run.getId(), run.getSiteId(), input.message(),
+                        input.context(), run.getMode().name()));
+            }
+            case NEAR_MISS_TAG -> agentClient.nearMissTag(nearMissAutoTag.call(run));
+            default -> throw new AgentCallException("AGENT_UNSUPPORTED", "아직 처리하지 않는 실행 종류입니다: " + run.getTaskType(), null);
+        };
+    }
+
+    private void saveFailure(Long runId, String code, String message, tools.jackson.databind.JsonNode steps, long started) {
+        try {
+            writer.saveFailure(runId, code, message, steps, elapsed(started));
+        } catch (Exception inner) {
+            log.error("실패 상태 저장에 실패했습니다. runId={}", runId, inner);
+        }
+    }
+
+    private static int elapsed(long startedNanos) {
+        return (int) Math.min(Integer.MAX_VALUE, (System.nanoTime() - startedNanos) / 1_000_000);
+    }
+}

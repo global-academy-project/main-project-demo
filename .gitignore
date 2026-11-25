@@ -1,6 +1,29 @@
 # Private
-/docs/private-attachment
 .env
+.env.*
+/docs/private-attachment
+ai-model/docs/private-attachment/
+infra-manage/docs/private-attachment/
+spring-server/docs/private-attachment/
+vite-web/docs/private-attachment/
+
+# AI model private files
+ai-model/.env
+ai-model/.env.*
+ai-model/adapters/
+ai-model/data/
+ai-model/out/
+
+# Infrastructure private files
+infra-manage/adapters/
+infra-manage/secret.yaml
+infra-manage/common-secret.yaml
+
+# Spring server runtime files
+spring-server/storage/
+
+# Frontend build files
+vite-web/dist/
 
 #### IDE
 .vs/
@@ -16,6 +39,14 @@ x86/
 # macOS
 .DS_Store
 Thumbs.db
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# IntelliJ project files
+*.iml
 
 #### Programming Language
 # Node.js
@@ -33,3 +64,26 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Java / Spring Boot
+*.class
+*.log
+*.ctxt
+hs_err_pid*
+.gradle/
+build/
+target/
+out/
+*.jar
+*.war
+*.ear
+*.nar
+!gradle/wrapper/gradle-wrapper.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# Infrastructure tools
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log

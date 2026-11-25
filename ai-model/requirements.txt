@@ -1,0 +1,27 @@
+# OCR mini - 운영 의존성 (직접 설치한 패키지만 기재)
+# 실제 설치된 모든 라이브러리의 버전 정보는 requirements.lock으로 확인
+
+# --- Web framework ---
+fastapi==0.162.0            # API 서버 프레임워크
+uvicorn[standard]==0.54.0   # ASGI 서버 (실행: uvicorn app.main:app)
+pydantic==2.14.1            # 요청/응답 스키마 (PdfInput, SummaryResponse)
+pydantic-settings==2.16.1   # 환경변수/.env 기반 설정 관리 (BaseSettings)
+
+# --- AI Model ---
+transformers==5.21.0        # Hugging face 연결
+
+# --- RAG ---
+requests==2.34.2            # 벡터 db 연결 확인용
+PyYAML==6.0.3               # YAML 파일을 파이썬 딕셔너리로 읽고 쓰는 라이브러리
+qdrant-client==1.20.0       # Qdrant 서버를 파이썬 코드로 다루는 공식 클라이언트
+pdfplumber==0.11.10         # pdf 파일을 다루기 위한 라이브러리
+
+# --- 사진 인식·음성·파일 받기·LoRA 어댑터 (C) ---
+onnxruntime==1.31.1         # YOLOX-Nano ONNX 실행 (CPU)
+python-multipart==0.0.32    # FastAPI 파일 업로드(multipart) 받기 (사진·녹음)
+faster-whisper==1.2.1       # Whisper small 음성 → 글 (CPU int8, CTranslate2·PyAV 같이 설치, 시스템 ffmpeg 불필요)
+av==18.1.0                  # faster-whisper 가 녹음을 풀 때 씀. PyAV 19 는 faster-whisper 1.2.1 과 안 맞음 (metadata_errors) → 올리지 말 것
+peft==0.21.2                # LoRA 어댑터 붙이기 (문장 추출 extract 등, LLM_ADAPTERS). Colab 학습과 같은 버전으로
+
+# --- 한글 파일 ---
+python-hwpx==7.0.0          # python에서 한글 파일을 만들기 위한 라이브러리

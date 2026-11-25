@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-server
+  labels:
+    app: spring
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spring
+  template:
+    metadata:
+      labels:
+        app: spring
+    spec:
+      containers:
+      - name: spring-container
+        image: spring-server:20261125100632942
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: common-system-config
+        - configMapRef:
+            name: common-spring-config
+        - configMapRef:
+            name: common-mysql-config
+        - secretRef:
+            name: common-spring-secret
+        env:
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: common-mysql-secret
+              key: MYSQL_PASSWORD
+        - name: MYSQL_HOST
+          value: mysql-service
+        - name: MYSQL_PORT
+          value: "3306"
+        - name: APP_OCR_BASE_URL
+          value: http://ai-model-service:60100
+        - name: APP_AGENT_BASE_URL
+          value: http://ai-model-service:60100
+        - name: APP_AGENT_CLIENT
+          value: fastapi
+        - name: VISION_MODEL_PATH
+          value: /models/huggingface/yolox/yolox_nano.onnx
+        - name: VISION_HELMET_MODEL_PATH
+          value: /models/huggingface/yolox/helmet_nano.onnx
+        - name: STT_MODEL_PATH
+          value: /models/huggingface/whisper-small-ko
+        - name: STT_MODEL_NAME
+          value: whisper-small-ko
+        - name: LLM_ADAPTERS
+          value: ""
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models/huggingface
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 60001
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        ports:
+        - name: spring-net
+          protocol: TCP
+          containerPort: 60001
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-data-volume

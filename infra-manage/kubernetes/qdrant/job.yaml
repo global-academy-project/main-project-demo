@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qdrant-init
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: qdrant-init
+        image: qdrant-init:20261125100632942
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: common-embedding-config
+        env:
+        - name: QDRANT_URL
+          value: http://qdrant-service:6333
+        - name: QDRANT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: common-qdrant-secret
+              key: QDRANT__SERVICE__API_KEY

@@ -1,0 +1,306 @@
+import json
+from io import BytesIO
+from urllib.error import URLError
+
+import pytest
+from pydantic import ValidationError
+
+from app.exceptions import ToolError
+from app.rag import http
+from app.rag.config import RagEnvironmentSettings, RagSettings
+from app.rag.filters import make_qdrant_conditions, read_filters
+from app.rag.tags.metadata import build_tag_status, validate_substance_links, validate_tag_status
+from app.tools.adapters.rag_tools import register_rag_tools
+from app.tools.rag_loader import load_search_backend
+from app.tools.tool_registry import ToolRegistry
+from app.tools.tool_setup import build_tool_registry
+from scripts import try_rag_tools
+
+
+@pytest.fixture(autouse=True)
+def isolated_environment(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "NETWORK_ENV", "RAG_BACKEND", "EMBEDDING_URL", "EMBEDDING_MODEL",
+        "EMBEDDING_DIM", "EMBEDDING_API_KEY", "QDRANT_URL",
+        "QDRANT_API_KEY", "QDRANT_READ_ONLY_API_KEY", "RAG_SEARCH_TIMEOUT_SECONDS",
+        "KB_DB_HOST", "KB_DB_PORT", "KB_DATABASE", "KB_INGEST_PASSWORD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_rag_defaults_do_not_require_application_settings():
+    settings = RagEnvironmentSettings()
+    assert settings.embedding_url is None
+    assert settings.embedding_dim == 1024
+    assert settings.embedding_model == "BAAI/bge-m3"
+    registry = build_tool_registry(rag_backend=None)
+    assert all(
+        tool.mock for tool in registry.tools()
+        if tool.name in {"search_accidents", "search_guides"}
+    )
+
+
+def test_search_site_filter_includes_public_and_current_site():
+    _, _, site_ids = read_filters({"site_id": 17})
+    assert site_ids == [0, 17]
+
+
+def test_sif_potential_filter_builds_boolean_qdrant_condition():
+    collections, payload_filters, site_ids = read_filters(
+        {"collection": "kb_accidents", "sif_potential": "NOT_POTENTIAL"}
+    )
+    conditions = make_qdrant_conditions(collections[0], payload_filters, site_ids)
+    assert {"key": "sif_potential", "match": {"value": "NOT_POTENTIAL"}} in conditions
+
+
+def test_tag_status_distinguishes_unknown_and_not_applicable():
+    status = build_tag_status(
+        {"severity": None, "accident_type": None, "work_type": ["HOT"], "substance": []},
+        not_applicable=("severity", "accident_type", "sif_potential"),
+    )
+    assert status["severity"] == "NOT_APPLICABLE"
+    assert status["accident_type"] == "NOT_APPLICABLE"
+    assert status["work_type"] == "KNOWN"
+    assert status["substance"] == "UNKNOWN"
+    assert status["sif_potential"] == "NOT_APPLICABLE"
+
+
+def test_tag_status_rejects_known_without_value():
+    with pytest.raises(ValueError, match="KNOWN인데 해당 축의 태그값이 없습니다"):
+        validate_tag_status({"ghs": "KNOWN"}, {"ghs": []})
+
+
+def test_substance_links_validate_cas_ghs_and_source():
+    substances = [
+        {"cas": "108-88-3", "ghs": ["FLAMMABLE_LIQUID"], "source": "KOSHA_MSDS"},
+        {"cas": "67-64-1", "ghs": ["FLAMMABLE_LIQUID"], "source": "KOSHA_MSDS"},
+    ]
+    validate_substance_links(substances, ["108-88-3", "67-64-1"], ["FLAMMABLE_LIQUID"])
+    with pytest.raises(ValueError, match="cas 배열은 substances"):
+        validate_substance_links(substances, ["108-88-3"], ["FLAMMABLE_LIQUID"])
+
+
+def test_backend_reads_infra_environment(monkeypatch):
+    variables = {
+        "EMBEDDING_URL": "http://embedding:8000/v1/embeddings/",
+        "EMBEDDING_MODEL": "deployment-model",
+        "EMBEDDING_DIM": "8",
+        "EMBEDDING_API_KEY": "test-embedding-key",
+        "QDRANT_URL": "http://qdrant-server:6333/",
+        "QDRANT_READ_ONLY_API_KEY": "test-reader-key",
+        "QDRANT_API_KEY": "test-writer-key",
+        "RAG_SEARCH_TIMEOUT_SECONDS": "7.5",
+        "KB_DB_HOST": "mysql",
+        "KB_DB_PORT": "3306",
+        "KB_DATABASE": "agent_kb",
+        "KB_INGEST_PASSWORD": "test-ingest-password",
+    }
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+    environment = RagEnvironmentSettings()
+    backend = RagSettings.from_env()
+    assert backend == RagSettings.from_settings(environment)
+    assert backend.embedding_url == "http://embedding:8000/v1/embeddings"
+    assert backend.qdrant_url == "http://qdrant-server:6333"
+    assert backend.embedding_model == "deployment-model"
+    assert backend.embedding_dim == 8
+    assert backend.timeout_seconds == 7.5
+    assert backend.embedding_api_key == "test-embedding-key"
+    assert backend.qdrant_api_key == "test-reader-key"
+    assert backend.kb_db_host == "mysql"
+    assert backend.kb_db_port == 3306
+    assert backend.kb_database == "agent_kb"
+    assert backend.kb_ingest_password == "test-ingest-password"
+    for representation in (repr(environment), repr(backend)):
+        assert "test-embedding-key" not in representation
+        assert "test-reader-key" not in representation
+        assert "test-ingest-password" not in representation
+
+
+@pytest.mark.reads_dotenv  # .env 읽기 자체를 시험한다 (conftest 가 env_file 을 끄지 않게)
+def test_dotenv_loading_and_environment_priority(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "EMBEDDING_URL=http://embedding/v1/embeddings\nEMBEDDING_DIM=8\n",
+        encoding="utf-8",
+    )
+    assert RagSettings.from_env().embedding_dim == 8
+    monkeypatch.setenv("EMBEDDING_DIM", "16")
+    assert RagSettings.from_env().embedding_dim == 16
+    assert RagEnvironmentSettings().embedding_dim == 16
+
+
+def test_embedding_endpoint_only_required_when_building_backend():
+    assert RagEnvironmentSettings().embedding_url is None
+    with pytest.raises(ValueError, match="EMBEDDING_URL"):
+        RagSettings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("EMBEDDING_URL", ""),
+        ("EMBEDDING_URL", "embedding:8000"),
+        ("EMBEDDING_URL", "ftp://embedding"),
+        ("QDRANT_URL", ""),
+        ("QDRANT_URL", "file:///qdrant"),
+        ("EMBEDDING_MODEL", " "),
+        ("EMBEDDING_DIM", "0"),
+        ("EMBEDDING_DIM", "-1"),
+        ("EMBEDDING_DIM", "1.5"),
+        ("RAG_SEARCH_TIMEOUT_SECONDS", "0"),
+        ("RAG_SEARCH_TIMEOUT_SECONDS", "nan"),
+        ("RAG_SEARCH_TIMEOUT_SECONDS", "inf"),
+    ],
+)
+def test_invalid_infra_settings_fail_explicitly(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError):
+        RagEnvironmentSettings()
+
+
+def test_tool_registration_keeps_default_collection_and_extra_filters():
+    calls = []
+
+    def search(query, *, k, filters):
+        calls.append(filters)
+        return []
+
+    registry = ToolRegistry()
+    register_rag_tools(
+        registry, search,
+        filters_by_tool={"search_guides": {"work_type": "HOT"}},
+    )
+    registry.call("search_accidents", {"query": "fire", "collection": "kb_guides"})
+    registry.call("search_guides", {"query": "fire", "collection": "kb_accidents"})
+    assert calls == [
+        {"collection": "kb_accidents"},
+        {"collection": "kb_guides", "work_type": "HOT"},
+    ]
+
+
+def test_registration_can_override_collection_explicitly():
+    calls = []
+
+    def search(query, *, k, filters):
+        calls.append(filters)
+        return []
+
+    registry = ToolRegistry()
+    register_rag_tools(
+        registry, search,
+        filters_by_tool={"search_guides": {"collection": "custom_guides"}},
+    )
+    registry.call("search_guides", {"query": "fire"})
+    assert calls == [{"collection": "custom_guides"}]
+
+
+def test_registered_backend_routes_and_preserves_contract(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_URL", "http://embedding/v1/embeddings")
+    monkeypatch.setenv("EMBEDDING_DIM", "2")
+    calls = []
+
+    def respond(request, timeout):
+        body = json.loads(request.data)
+        calls.append((request.full_url, body))
+        if request.full_url == "http://embedding/v1/embeddings":
+            result = {"data": [{
+                "index": 0,
+                "embedding": [0.1, 0.2],
+                "sparse_embedding": {"indices": [4], "values": [1.0]},
+            }]}
+        else:
+            is_guide = "/kb_guides/" in request.full_url
+            result = {"result": {"points": [{
+                "id": "00000000-0000-5000-8000-000000000001",
+                "score": -0.2,
+                "payload": {
+                    "kb_source_id": 42,
+                    "source_type": "LAW" if is_guide else "ACCIDENT_REPORT",
+                    "title": "Safety",
+                    "locator": "Section 1",
+                    "text": "Fire prevention",
+                },
+            }]}}
+        return BytesIO(json.dumps(result).encode())
+
+    monkeypatch.setattr(http, "urlopen", respond)
+    registry = build_tool_registry(
+        rag_backend="app.rag.tool_backend:build_search_backend",
+    )
+    assert all(
+        not tool.mock for tool in registry.tools()
+        if tool.name in {"search_accidents", "search_guides"}
+    )
+    output = registry.call("search_accidents", {"query": " fire ", "k": 50})
+    assert output["hits"][0]["doc_id"] == "ACCIDENT_REPORT:42"
+    assert output["hits"][0]["score"] == -0.2
+    assert output["hits"][0]["source"] == "Safety (Section 1)"
+    assert "/kb_accidents/" in calls[1][0]
+    assert calls[0][1]["input"] == "fire"
+    query = calls[1][1]
+    assert query["query"] == {"fusion": "rrf"}
+    assert query["limit"] == 50
+    assert len(query["prefetch"]) == 2
+    assert query["prefetch"][0]["using"] == "dense"
+    assert query["prefetch"][1]["using"] == "sparse"
+    assert query["prefetch"][0]["limit"] == 50
+    assert {"key": "flagged", "match": {"value": False}} in query["prefetch"][0]["filter"]["must"]
+    assert {"key": "site_id", "match": {"any": [0]}} in query["prefetch"][1]["filter"]["must"]
+
+    assert registry.call(
+        "search_guides", {"query": "fire", "min_score": 0.0},
+    ) == {"hits": []}
+    assert "/kb_guides/" in calls[3][0]
+    assert len(calls) == 4
+
+
+def test_connection_error_still_maps_to_tool_unavailable(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_URL", "http://embedding/v1/embeddings")
+
+    def unavailable(request, timeout):
+        raise URLError("test connection failure")
+
+    monkeypatch.setattr(http, "urlopen", unavailable)
+    backend = load_search_backend("app.rag.tool_backend:build_search_backend")
+    assert backend is not None
+    registry = ToolRegistry()
+    register_rag_tools(registry, backend.search, backend_errors=backend.errors)
+    with pytest.raises(ToolError) as error:
+        registry.call("search_guides", {"query": "fire"})
+    assert error.value.code == "TOOL_UNAVAILABLE"
+
+
+def test_cli_loads_backend_and_checks_both_tools(monkeypatch, capsys):
+    monkeypatch.setenv("EMBEDDING_URL", "http://embedding/v1/embeddings")
+    monkeypatch.setenv("EMBEDDING_DIM", "2")
+    calls = []
+
+    def respond(request, timeout):
+        calls.append(request.full_url)
+        if request.full_url == "http://embedding/v1/embeddings":
+            result = {"data": [{
+                "index": 0,
+                "embedding": [0.1, 0.2],
+                "sparse_embedding": {"indices": [4], "values": [1.0]},
+            }]}
+        else:
+            result = {"result": {"points": []}}
+        return BytesIO(json.dumps(result).encode())
+
+    monkeypatch.setattr(http, "urlopen", respond)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "try_rag_tools.py",
+            "--backend", "app.rag.tool_backend:build_search_backend",
+            "--k", "3", "fire",
+        ],
+    )
+    assert try_rag_tools.main() == 0
+    output = capsys.readouterr().out
+    assert "[search_accidents]" in output
+    assert "[search_guides]" in output
+    assert len(calls) == 4
+    assert "/kb_accidents/" in calls[1]
+    assert "/kb_guides/" in calls[3]

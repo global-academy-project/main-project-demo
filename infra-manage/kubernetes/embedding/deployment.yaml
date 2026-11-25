@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: embedding
+  template:
+    metadata:
+      labels:
+        app: embedding
+    spec:
+      securityContext:
+        fsGroup: 65003
+      containers:
+      - name: embedding
+        image: embedding:20261125100632942
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 60110
+        envFrom:
+        - configMapRef:
+            name: common-system-config
+        - configMapRef:
+            name: common-embedding-config
+        - secretRef:
+            name: common-embedding-secret
+        env:
+        - name: HF_HOME
+          value: /models/huggingface
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          periodSeconds: 10
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models/huggingface
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: embedding-model-cache

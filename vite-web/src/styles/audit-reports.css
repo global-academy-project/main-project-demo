@@ -1,0 +1,126 @@
+.audit-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  font-family: var(--font-sans); /* 다른 화면과 같은 글꼴 (기본 :root 글꼴은 한글 글꼴이 다름) */
+}
+.audit-card {
+  padding: var(--space-5);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+.audit-card__head, .audit-row, .audit-item__title { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+.audit-card__head h2, .audit-item h3 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: var(--text-md); /* 카드 제목은 다른 화면(.home-panel__title)과 같은 크기·굵기 */
+  font-weight: 700;
+}
+.audit-card__head p, .audit-row p, .audit-evidence { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
+.audit-create { display: flex; flex-direction: column; gap: var(--space-5); }
+.audit-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); max-width: 620px; }
+.audit-form-grid label, .audit-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-sub);
+  font-weight: 700;
+}
+.audit-form-grid input, .audit-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--touch-field);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-input);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+.audit-editor textarea { min-height: 110px; resize: vertical; }
+.audit-create fieldset { margin: 0; padding: var(--space-4); border: 1px solid var(--color-border-soft); border-radius: var(--radius-md); }
+.audit-create legend { padding: 0 var(--space-2); color: var(--color-text-strong); font-weight: 700; }
+.audit-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.audit-checks label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-sub);
+}
+.audit-checks input { width: 18px; height: 18px; accent-color: var(--color-primary); }
+.audit-actions { display: flex; justify-content: flex-end; }
+.audit-notice { margin: 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--color-primary-soft); color: var(--color-text-strong); }
+.audit-list, .audit-items { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-5); }
+.audit-row { align-items: center; padding: var(--space-4); border: 1px solid var(--color-border-soft); border-radius: var(--radius-md); }
+.audit-row__title { color: var(--color-text-strong); font-size: var(--text-lg); font-weight: 700; text-decoration: none; }
+.audit-row__title:hover { text-decoration: underline; }
+.audit-row__meta { display: flex; align-items: center; gap: var(--space-3); }
+.audit-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--color-neutral-soft);
+  color: var(--color-text-sub);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.audit-status--approved, .audit-status--done, .audit-status--pdf_generated, .audit-status--match { background: var(--color-success-soft); color: var(--color-success-text); }
+.audit-status--failed, .audit-status--mismatch { background: var(--color-danger-soft); color: var(--color-danger); }
+.audit-status--review_required, .audit-status--processing, .audit-status--queued { background: var(--color-warning-soft); color: var(--color-warning-text); }
+.audit-item { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border-soft); border-radius: var(--radius-md); }
+@media (max-width: 700px) {
+  .audit-form-grid, .audit-checks { grid-template-columns: 1fr; }
+  .audit-card { padding: var(--space-4); }
+  .audit-card__head, .audit-row { flex-direction: column; }
+  .audit-row__meta { width: 100%; justify-content: space-between; }
+}
+.audit-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-2) var(--space-4); margin: 0; }
+.audit-stats div { display: flex; flex-direction: column; }
+.audit-stats dt { color: var(--color-text-muted); font-size: var(--text-sm); }
+.audit-stats dd { margin: 0; color: var(--color-text-strong); font-weight: 700; }
+.audit-editor input { padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.audit-status--generating, .audit-status--pending { background: var(--color-warning-soft); color: var(--color-warning-text); }
+/* "AI 초안" 배지(AI가 쓴 글이 저장된 그대로인 칸)와 칸 제목 옆 배지 자리 */
+.audit-status--ai_draft { background: var(--color-primary-soft); color: var(--color-text-sub); }
+.audit-editor__label, .audit-item__badges { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+/* 종합 의견 칸: 글자는 왼쪽, 배지는 오른쪽. 오른쪽 여백은 항목 카드(안쪽 여백 + 테두리 1px)와 같게 맞춘다 */
+.audit-editor__label { justify-content: space-between; padding-right: calc(var(--space-4) + 1px); }
+/* 화면에서만: 종합 의견 제목 줄(배지 28px)과 제목 칸에 위아래 간격 8px. 제목 칸(.audit-no-print)은 인쇄에 나오지 않는다 */
+@media screen { .audit-editor__label, .audit-editor.audit-no-print { margin: var(--space-2) 0; } }
+
+/* 화면은 textarea 를 쓰고, 인쇄용 글(같은 내용)은 인쇄할 때만 보인다. textarea 는 인쇄해도 칸 크기가 고정돼 긴 글이 잘리고 스크롤이 찍힌다 */
+.audit-print-text { display: none; }
+
+/* 인쇄·PDF 저장: 화면 메뉴·버튼·안내를 빼고 보고서 문서 모양으로 */
+@page audit-report { size: A4; margin: 15mm 14mm; }
+@media print {
+  .app-nav, .app-tabs, .dashboard-header, .page-head__actions, .page-head__site, .ui-toast, .app-nav-scrim { display: none !important; }
+  .dashboard-main, .dashboard-content { margin: 0 !important; padding: 0 !important; max-width: none !important; }
+  body { background: #fff; }
+  /* 화면용 안내·상태 배지·제목 칸·근거 0건 줄은 문서에서 뺀다 (제목은 위 페이지 머리에 이미 있다) */
+  .audit-no-print, .audit-card__head, .audit-notice { display: none !important; }
+  .audit-page { page: audit-report; gap: 0; color: #000; font-size: 13px; line-height: 1.65; }
+  .page-head-wrap { margin-bottom: 14px; padding-bottom: 8px; border-bottom: 2px solid #000; }
+  .audit-page .page-head__title { color: #000; font-size: 22px; }
+  .audit-page .page-head__meta { color: #444; }
+  .audit-card { border: 0 !important; box-shadow: none !important; background: none !important; padding: 0 !important; }
+  /* 종합 의견·요약: textarea 대신 같은 내용을 그대로 이어 붙여 보인다 (스크롤·잘림 없음, 줄바꿈 유지) */
+  .audit-editor { gap: 4px; margin-bottom: 12px; color: #000; font-size: 13px; }
+  .audit-editor textarea { display: none !important; }
+  .audit-print-text { display: block; font-weight: 400; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .audit-print-text:empty { min-height: 5em; border: 1px solid #999; }
+  .audit-items { gap: 0; margin-top: 8px; }
+  .audit-item { gap: 6px; padding: 10px 0 2px; border: 0; border-top: 1px solid #999; border-radius: 0; break-inside: avoid; }
+  .audit-item h3 { color: #000; font-size: 15px; }
+  .audit-item .audit-editor { margin-bottom: 4px; }
+  .audit-stats { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 0; }
+  .audit-stats div { margin: 0 -1px -1px 0; padding: 3px 8px; border: 1px solid #aaa; }
+  .audit-stats dt { color: #444; font-size: 11px; }
+  .audit-stats dd { color: #000; }
+  .audit-evidence { color: #444; font-size: 11px; }
+}

@@ -1,0 +1,131 @@
+### 규칙 판정 확인용 (IntelliJ HTTP Client). 위에서부터 순서대로 실행.
+### 내부 API 토큰은 서버와 같은 환경 변수 INTERNAL_API_TOKEN 을 읽는다 ($processEnv)
+@host = http://localhost:8080
+
+### 1. 관리자 로그인 (비밀번호는 auth.http 에서 바꾼 값으로)
+POST {{host}}/api/v1/auth/login
+Content-Type: application/json
+
+{"email": "admin@test.com", "password": "Admin5678!", "rememberMe": false}
+
+> {% client.global.set("adminToken", response.body.data.accessToken); %}
+
+### 2. 현장 목록 (siteId 확인). 아래 요청들의 siteId 를 여기 값으로
+GET {{host}}/api/v1/users/me
+Authorization: Bearer {{adminToken}}
+
+### 3. [웹] 시나리오 B: 산소 17.5% → result BLOCK, evaluationId null (미리 확인, 저장 안 함)
+###    checks 5건: CONFINED_O2_RANGE 만 FAIL, 나머지 PASS (통과 항목도 actual·expected 가 온다)
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED",
+ "input": {"measurement": {"O2": 17.5, "CO2": 0.8, "CO": 5, "H2S": 0, "LEL": 0}}}
+
+### 4. [웹] 모두 정상 → PASS, violations [], checks 5건 모두 PASS
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED",
+ "input": {"measurement": {"O2": 20.9, "CO2": 0.04, "CO": 0, "H2S": 0, "LEL": 0}}}
+
+### 5. [웹] 측정값 누락(CO 없음) + 이름 오타(O3) → BLOCK "측정값이 없습니다.", unusedFields ["measurement.O3"]
+###    checks: CONFINED_CO_MAX 만 MISSING (actual null)
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED",
+ "input": {"measurement": {"O2": 20.9, "CO2": 0.04, "O3": 1, "H2S": 0, "LEL": 0}}}
+
+### 6. [웹] 측정값이 문자열 → 400 INVALID_REQUEST
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED", "input": {"measurement": {"O2": "17.5"}}}
+
+### 7. [웹] 없는 작업 종류 → 400 INVALID_REQUEST
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "WELDING", "input": {}}
+
+### 8. [웹] 없는 허가서를 대상으로 → 404 NOT_FOUND (허가 API 전이라 저장 확인은 다음 단계)
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED", "target": {"type": "PERMIT", "id": 999999},
+ "input": {"measurement": {"O2": 17.5}}}
+
+### 9. [웹] 토큰 없이 → 401 UNAUTHORIZED
+POST {{host}}/api/v1/rules/check
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED", "input": {}}
+
+### 10. [내부] 에이전트 도구 호출: 시나리오 B → BLOCK (응답 모양은 웹과 같음)
+POST {{host}}/internal/v1/tools/check_rules
+X-Internal-Token: {{$env.INTERNAL_API_TOKEN}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED",
+ "input": {"measurement": {"O2": 17.5, "CO2": 0.8, "CO": 5, "H2S": 0, "LEL": 0}}}
+
+### 11. [내부] 토큰 틀림 → 401 UNAUTHORIZED
+POST {{host}}/internal/v1/tools/check_rules
+X-Internal-Token: wrong-token
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED", "input": {}}
+
+### 12. [내부] JWT 로는 안 됨 (토큰 헤더 없음) → 401 UNAUTHORIZED
+POST {{host}}/internal/v1/tools/check_rules
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED", "input": {}}
+
+### 13. [내부] 이 현장 실행이 아닌 agentRunId → 400 INVALID_REQUEST
+POST {{host}}/internal/v1/tools/check_rules
+X-Internal-Token: {{$env.INTERNAL_API_TOKEN}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED", "agentRunId": 999999, "input": {"measurement": {"O2": 20.9}}}
+
+### 14. [웹] 화기: 아무 조치도 없음 → BLOCK 5건 (가연성 가스 측정값 없음, 감시자, 소화기, 비산방지, 인화성 증기)
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "HOT", "input": {"form": {}}}
+
+### 15. [웹] 화기: 모든 조치 + 가연성 가스 3 %LEL → PASS
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "HOT",
+ "input": {"measurement": {"LEL": 3},
+           "form": {"watcher_name": "김감시", "extinguisher_ready": true, "spark_prevention": true, "flammable_vapor_removed": true}}}
+
+### 16. [웹] 화기: 가연성 가스 10 %LEL → BLOCK "폭발하한의 10%에 도달" (화기작업 중단)
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "HOT",
+ "input": {"measurement": {"LEL": 10},
+           "form": {"watcher_name": "김감시", "extinguisher_ready": true, "spark_prevention": true, "flammable_vapor_removed": true}}}
+
+### 17. [웹] 밀폐공간: 다른 값은 정상, 가연성 가스 12 %LEL → BLOCK (H-80 기준 10% 미만)
+POST {{host}}/api/v1/rules/check
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"siteId": 1, "workType": "CONFINED",
+ "input": {"measurement": {"O2": 20.9, "CO2": 0.04, "CO": 0, "H2S": 0, "LEL": 12}}}

@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mysql-seed-job
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: mysql-seed-container
+        image: mysql:8.4.13-oraclelinux9
+        envFrom:
+          - configMapRef:
+              name: common-mysql-config
+          - secretRef:
+              name: common-mysql-secret
+        command:
+          - bash
+          - -c
+          - |
+            set -euo pipefail
+            HOST=mysql-service
+            PORT=3306
+            DB="$MYSQL_DATABASE"
+            export MYSQL_PWD="$MYSQL_PASSWORD"
+            MYSQL="mysql --default-character-set=utf8mb4 -h$HOST -P$PORT -u$MYSQL_USER"
+
+            # 업무 테이블은 Spring(main-server) Flyway가 만든다. sites 테이블이 보일 때까지 대기.
+            echo "MySQL 및 업무 테이블(sites) 준비 대기... (최대 10분)"
+            ready=0
+            for i in $(seq 1 120); do
+              if $MYSQL "$DB" -e "SELECT 1 FROM sites LIMIT 1;" >/dev/null 2>&1; then
+                ready=1; break
+              fi
+              sleep 5
+            done
+            if [ "$ready" != "1" ]; then
+              echo "업무 테이블이 준비되지 않았습니다 (Spring 마이그레이션 대기 실패)" >&2
+              exit 1
+            fi
+            echo "업무 테이블 준비 완료"
+
+            # 같은 표식 데이터가 이미 있으면 건너뛴다 (재실행/재시도 시 중복 오류 방지).
+            run_if_absent() {
+              label="$1"; check_sql="$2"; file="$3"
+              n="$($MYSQL -N -s "$DB" -e "$check_sql")"
+              if [ "$n" != "0" ]; then
+                echo "이미 적용됨, 건너뜀: $label (표식 $n건)"
+                return 0
+              fi
+              echo "시드 적용: $label"
+              $MYSQL "$DB" < "$file"
+              echo "시드 완료: $label"
+            }
+
+            run_if_absent "container-delivery-insert-db.sql" \
+              "SELECT COUNT(*) FROM sites WHERE mode = 'VERIFY';" \
+              /seed/verify/container-delivery-insert-db.sql
+
+            run_if_absent "seed_audit_oct2026.sql" \
+              "SELECT COUNT(*) FROM work_zones WHERE code LIKE 'SEED-%';" \
+              /seed/report/seed_audit_oct2026.sql
+
+            echo "모든 시드 주입 완료"
+        volumeMounts:
+        - name: seed-verify-files
+          mountPath: /seed/verify
+          readOnly: true
+        - name: seed-report-files
+          mountPath: /seed/report
+          readOnly: true
+      volumes:
+      - name: seed-verify-files
+        configMap:
+          name: mysql-verify-files
+      - name: seed-report-files
+        configMap:
+          name: report-dummy-data

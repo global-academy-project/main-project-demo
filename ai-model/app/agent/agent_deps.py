@@ -1,0 +1,68 @@
+"""작업 등록 API의 의존성 (FastAPI Depends).
+
+라우터는 아래 `Annotated` 별칭을 파라미터 타입으로 쓰면 된다.
+
+    def work_register(body: WorkRegisterRequest, agent: WorkRegisterAgentDep): ...
+
+엔진·모델은 서버 설정(config.py의 SCENARIO_MODELS 표, 기동 때 만든 app.state.llm_provider)으로만 정한다.
+요청자가 엔진을 고를 수 없다 (지침 4장 FastAPI 주의).
+도구 레지스트리는 기동 후 한 번만 만든다 (인자 없는 lru_cache 함수).
+테스트는 `app.dependency_overrides[get_work_register_agent]`로 바꾼다. override 키는 이 모듈의 함수 객체와 같아야 한다.
+"""
+
+from __future__ import annotations
+from functools import lru_cache
+from typing import Annotated
+from fastapi import Depends, Request
+from app.tools.tool_registry import ToolRegistry
+from ..tools.tool_setup import build_tool_registry
+from .work_register import WorkRegisterAgent
+from .check_rules_setup import build_check_rules_tool
+from .msds_setup import build_msds_tool
+from app.core import Settings, get_settings
+from app.llm.llm_provider import LLMClientProvider
+from app.services.agent_work_service import WorkRegisterAgentFactory
+
+@lru_cache
+def get_tool_registry() -> ToolRegistry:
+    # rag_enabled(기본 True)면 검색 도구 2개가 A의 검색(rag_backend)으로 바뀐다. False(RAG_ENABLED=false)면 mock. 설정이 틀리면 첫 호출 때 ValueError.
+    # check_rules: CHECK_RULES_TOOL=SPRING이면 C의 실제 도구로 바꾼다. MOCK이면 None이라 mock 그대로다.
+    # lookup_msds: MSDS_TOOL=KOSHA이면 A의 공단 MSDS API(msds_setup 래퍼)로 바꾼다. MOCK(기본)이면 None이라 mock 그대로다.
+    return build_tool_registry(
+        rag_backend=get_settings().rag_backend_path,
+        check_rules_tool=build_check_rules_tool(get_settings()),
+        msds_tool=build_msds_tool(get_settings()),
+    )
+
+ToolRegistryDep = Annotated[ToolRegistry, Depends(get_tool_registry)]
+
+def get_llm_provider(request: Request) -> LLMClientProvider:
+    """기동 때 create_app()이 app.state.llm_provider에 넣어 둔 시나리오별 모델 제공자."""
+    return request.app.state.llm_provider
+
+LLMProviderDep = Annotated[LLMClientProvider, Depends(get_llm_provider)]
+
+def get_work_register_agent(
+    settings: Annotated[Settings, Depends(get_settings)],
+    registry: ToolRegistryDep,
+    provider: LLMProviderDep,
+) -> WorkRegisterAgent:
+    """개발 확인용 경로(/api/v1/test/work-register). 시나리오 A 모델을 쓴다."""
+    # 엔진 문제(EngineBlockedError · LLMConfigError)는 여기서 나고 llm_error_handler가 응답을 만든다.
+    return WorkRegisterAgent(llm=provider.get("A"), tools=registry, judge_max_tokens=settings.ai_max_output_tokens)
+
+WorkRegisterAgentDep = Annotated[WorkRegisterAgent, Depends(get_work_register_agent)]
+
+def get_work_register_agent_factory(
+    settings: Annotated[Settings, Depends(get_settings)],
+    registry: ToolRegistryDep,
+    provider: LLMProviderDep,
+) -> WorkRegisterAgentFactory:
+    """Spring 실행 경로. 서비스가 요청의 mode로 시나리오(A·F)를 정한 뒤 에이전트를 만든다."""
+    def make(scenario_key: str) -> WorkRegisterAgent:
+        return WorkRegisterAgent(
+            llm=provider.get(scenario_key), tools=registry, judge_max_tokens=settings.ai_max_output_tokens
+        )
+    return make
+
+WorkRegisterAgentFactoryDep = Annotated[WorkRegisterAgentFactory, Depends(get_work_register_agent_factory)]

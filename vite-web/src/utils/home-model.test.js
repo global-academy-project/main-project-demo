@@ -1,0 +1,89 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { alertsOf, draftDocs, draftRemaining, nextAction, timeRange, todoTiles, todoTotal, typeCounts, workStages } from './home-model.js';
+
+const work = (patch = {}) => ({
+  workId: 5, siteId: 1, workDate: '2026-11-05', title: '3번 탱크 청소', workType: 'CONFINED', highRisk: true, status: 'DRAFT',
+  permits: [], riskAssessment: null, tbm: null, ...patch,
+});
+
+test('할 일 칸: 9종 자리를 고정하고 서버 건수·기한 지남을 그대로 쓴다', () => {
+  const tiles = todoTiles([{ type: 'PHOTO_MISSING', label: '사진 미첨부', count: 2, overdue: true, entries: [{ targetType: 'TBM', targetId: 9 }] }]);
+  assert.equal(tiles.length, 9);
+  const photo = tiles.find((tile) => tile.type === 'PHOTO_MISSING');
+  assert.deepEqual([photo.count, photo.overdue, photo.path], [2, true, '/job/tbm?tbmId=9']);
+  assert.equal(tiles.find((tile) => tile.type === 'TBM_MISSING').count, 0);
+  assert.equal(todoTotal(tiles), 2);
+});
+
+test('단계: 평가 없음 → 지금 할 일은 위험성평가 작성', () => {
+  const stages = workStages(work());
+  assert.equal(stages.find((stage) => stage.key === 'risk').state, 'todo');
+  assert.equal(nextAction(work()).label, '위험성평가 작성');
+});
+
+test('허가 차단이 있으면 단계는 문제, 지금 할 일은 차단 확인', () => {
+  const blocked = work({ riskAssessment: { riskAssessmentId: 3, status: 'PENDING' }, permits: [{ permitId: 8, permitType: 'CONFINED', status: 'BLOCKED' }] });
+  assert.equal(workStages(blocked).find((stage) => stage.key === 'permit').state, 'problem');
+  assert.deepEqual(nextAction(blocked), { label: '작업허가 판정 차단 확인', tone: 'block', path: '/job/permits?permitId=8' });
+});
+
+test('일반 작업은 허가 단계를 해당 없음(완료)으로 본다', () => {
+  const general = work({ workType: 'GENERAL', highRisk: false });
+  const permit = workStages(general).find((stage) => stage.key === 'permit');
+  assert.deepEqual([permit.state, permit.hint], ['skip', '해당 없음']);
+});
+
+test('평가·허가 다 됐는데 TBM 없으면 TBM 작성, 모두 승인 대기면 승인 대기', () => {
+  const ready = work({ riskAssessment: { riskAssessmentId: 3, status: 'PENDING' }, permits: [{ permitId: 8, status: 'PENDING' }] });
+  assert.equal(nextAction(ready).label, 'TBM 작성');
+  assert.equal(nextAction({ ...ready, tbm: { tbmId: 4, status: 'DONE' } }).label, '승인 대기');
+});
+
+test('평가·허가·TBM 이 모두 승인되면 작업 준비 완료 (서버에 작업 승인·종료가 없어서)', () => {
+  const done = work({ riskAssessment: { riskAssessmentId: 3, status: 'APPROVED' }, permits: [{ permitId: 8, status: 'APPROVED' }], tbm: { tbmId: 4, status: 'APPROVED' } });
+  assert.deepEqual(nextAction(done), { label: '작업 준비 완료', tone: 'done', path: null });
+  assert.deepEqual(workStages(done).map((stage) => stage.key), ['work', 'risk', 'permit', 'tbm', 'ready']);
+  assert.equal(workStages(done).at(-1).state, 'done');
+  const tbmWaiting = { ...done, tbm: { tbmId: 4, status: 'DONE' } };
+  assert.equal(nextAction(tbmWaiting).label, 'TBM 확인 요청·승인 확인');
+  assert.equal(workStages(tbmWaiting).at(-1).state, 'current');
+});
+
+test('종류별 건수는 0건 종류도 자리를 둔다', () => {
+  assert.deepEqual(typeCounts([work(), work({ workType: 'HOT' }), work()]).map((item) => item.count), [0, 1, 0, 2]); // 순서: 일반·화기·고소·밀폐공간 (11/16 종류 색 순서)
+});
+
+test('경고: 차단 작업 → 기한 지남 → 고위험 순, 같은 작업은 한 번만', () => {
+  const blocked = work({ workId: 1, status: 'BLOCKED' });
+  const risky = work({ workId: 2 });
+  const alerts = alertsOf({ items: [{ type: 'APPROVAL_OVERDUE', label: '승인 지연', count: 1, overdue: true }] }, [blocked, risky]);
+  assert.deepEqual(alerts.map((alert) => alert.key), ['block-1', 'due-APPROVAL_OVERDUE', 'risk-2']);
+});
+
+test('시간 표시와 초안 목록', () => {
+  assert.equal(timeRange('2026-11-05T14:00:00', '2026-11-05T17:30:00'), '14:00~17:30');
+  assert.equal(timeRange(null, null), '');
+  const docs = draftDocs({ workId: 5, riskAssessmentId: 3, permits: [{ permitId: 8, permitType: 'CONFINED' }], tbmId: 4, notes: [] });
+  assert.deepEqual(docs.map((doc) => doc.key), ['WORK', 'RISK', 'PERMIT-8', 'TBM']);
+  assert.equal(draftRemaining(docs[2], { status: 'DRAFT', lastEvaluation: null }).label, '측정·판정');
+  assert.equal(draftRemaining(docs[1], { status: 'PENDING' }).done, true);
+});
+
+test('daily log tile shows written state instead of a count', async () => {
+  const { tileValue } = await import('./home-model.js');
+  const dashboard = { works: { total: 3 }, deadlines: { dailyLogDeadline: '2026-11-06T18:00:00' } };
+  assert.deepEqual(tileValue({ type: 'DAILY_LOG_MISSING', count: 1 }, dashboard), { text: '미작성', unit: '', word: true });
+  assert.deepEqual(tileValue({ type: 'DAILY_LOG_MISSING', count: 1, overdue: true }, dashboard), { text: '미작성', unit: '', word: true });
+  assert.deepEqual(tileValue({ type: 'DAILY_LOG_MISSING', count: 0 }, dashboard), { text: '작성 완료', unit: '', word: true });
+  assert.deepEqual(tileValue({ type: 'DAILY_LOG_MISSING', count: 0 }, { works: { total: 0 } }), { text: '작업 없음', unit: '', word: true });
+  assert.deepEqual(tileValue({ type: 'TBM_MISSING', count: 3 }), { text: '3', unit: '건' });
+});
+
+test('홈 제목 문장', async () => {
+  const { homeHeadline, todoTiles } = await import('./home-model.js');
+  assert.equal(homeHeadline(null, []), '홈');
+  assert.equal(homeHeadline({ works: { blocked: 2 } }, []), '오늘 차단된 작업이 2건 있어요');
+  assert.equal(homeHeadline({ works: { blocked: 0 } }, todoTiles([{ type: 'TBM_MISSING', count: 3 }])), '오늘 할 일이 3건 있어요');
+  assert.equal(homeHeadline({ works: { blocked: 0 } }, todoTiles([])), '오늘 할 일을 모두 마쳤어요');
+});

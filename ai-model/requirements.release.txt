@@ -1,0 +1,8 @@
+# 배포 의존성
+-r requirements.txt         # 운영 의존성 포함
+# Keep PyPI for other packages and select CPU-only PyTorch wheels explicitly.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.9.1+cpu
+torchvision==0.24.1+cpu
+torchaudio==2.9.1+cpu
+pytest==9.1.1  

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-model-service
+spec:
+  selector:
+    app: ai-model
+  ports:
+  - name: http
+    port: 60100
+    targetPort: http

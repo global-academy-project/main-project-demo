@@ -1,0 +1,265 @@
+"""작업 등록 에이전트 API 요청·응답 (POST /api/v1/agent/work-register).
+
+FastAPI는 대화 상태를 저장하지 않는다(대화·실행 기록은 Spring의 agent_conversations · agent_runs가 갖는다).
+그래서 되묻기 응답에 지금까지 모은 값(slots)을 돌려주고, 다음 요청에 그 slots를 그대로 다시 실어 보낸다.
+
+    1차 요청  {"message": "오늘 오후에 용접 작업 있어"}
+    1차 응답  runStatus=WAITING_INPUT, ask.missingFields=[장소, 화기 종류, ...], slots={...}
+    2차 요청  {"message": "<답변>", "slots": <1차 응답의 slots>}
+    2차 응답  runStatus=DONE, drafts={위험성평가, 화기작업허가서, 점검표, TBM}, steps=[도구 호출 기록]
+
+runStatus 값은 agent_runs.status 코드(WAITING_INPUT, DONE)와 같다.
+필드 표기는 base_schemas.CamelModel을 따라 camelCase로 내보내고, 요청은 snake_case·camelCase 둘 다 받는다
+(Spring DTO 규칙이 정해지면 바꾼다. 지침 9장).
+"""
+from __future__ import annotations
+from typing import Any, Literal, Annotated
+from pydantic import BaseModel, Field
+from .base_schemas import CamelModel
+from .forms import (
+    Citation,
+    InspectionChecklistDraft,
+    MeasurementItem,
+    PermitDraft,
+    PermitFormType,
+    RiskAssessmentDraft,
+    TbmDraft,
+)
+
+MAX_UTTERANCES = 10
+PositiveId = Annotated[int, Field(strict=True, gt=0)]
+
+class WorkSlots(CamelModel):
+    """되묻기 체크리스트 항목. 응답으로 받은 값을 다음 요청에 그대로 다시 보낸다.
+    화면에서 직접 채운 값(예: 화재감시자 이름)도 여기에 넣어 보내면 된다."""
+
+    utterances: list[str] = Field(default_factory=list, max_length=MAX_UTTERANCES, description="지금까지 받은 작업책임자 발화")
+    location: str | None = None
+    hot_work_kind: str | None = None
+    nearby_materials: list[str] = Field(default_factory=list)
+    nearby_materials_none: bool = Field(default=False, description="'주변 물질 없음'이라고 답했다")
+    material_locations: dict[str, str] = Field(default_factory=dict, description="물질 → 보관 위치")
+    headcount: int | None = Field(default=None, ge=1, le=500)
+    work_date: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    equipment: list[str] = Field(default_factory=list)
+    excluded_equipment: list[str] = Field(default_factory=list, description="'크레인 안 씀'처럼 쓰지 않는다고 한 장비")
+    equipment_none: bool = False
+    measurements: dict[MeasurementItem, float] = Field(default_factory=dict)
+    fire_watcher: str | None = None
+    attendant: str | None = None
+    asked_keys: list[str] = Field(default_factory=list, description="직전에 되물은 항목 key. 다음 발화의 짧은 답('3', '없음')을 읽는 데 쓴다")
+    asked_optional_keys: list[str] = Field(default_factory=list, description="한 번 물은 선택 항목 key (예: 'lel'). 다시 묻지 않는다")
+    pending_text: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="어떤 일인지 몰라 되물었을 때(시나리오 되묻기) 그 전까지 받은 말. 다음 요청에서 이번 답과 이어 붙여 다시 분류한다",
+    )
+
+
+class WorkRegisterRequest(CamelModel):
+    """개발 확인용(/api/v1/test/work-register)과 Spring 실행 요청의 공통 모양. id는 여기서는 선택이다."""
+
+    message: str = Field(min_length=1, max_length=2000, description="이번 작업책임자 발화")
+    slots: WorkSlots | None = Field(default=None, description="이전 응답의 slots. 첫 요청이면 비운다")
+    mode: Literal["VERIFY", "GUIDE"] = Field(default="VERIFY", description="sites.mode. GUIDE면 쉬운 말 안내를 붙인다")
+    run_id: PositiveId | None = None
+    site_id: PositiveId | None = None
+    permit_id: PositiveId | None = None
+
+
+class AgentWorkRegisterRequest(WorkRegisterRequest):
+    """Spring 실행 요청 (POST /api/v1/agent/work-register).
+
+    runId·siteId는 Spring이 정해 넘긴다 (LLM이 정하지 않는다). 빠지면 422.
+    이 값은 check_rules 인자와 steps의 runId·siteId에 그대로 들어간다.
+    mode도 필수다(AgentRun.mode). 작업 등록이 A(VERIFY)인지 F(GUIDE)인지를 이 값으로 정하므로,
+    빠졌을 때 VERIFY로 두면 GUIDE 현장이 조용히 A로 처리된다.
+    """
+
+    run_id: PositiveId
+    site_id: PositiveId
+    mode: Literal["VERIFY", "GUIDE"] = Field(description="sites.mode (AgentRun.mode). VERIFY → 시나리오 A, GUIDE → F")
+
+
+class MissingField(CamelModel):
+    key: str
+    label: str
+    question: str
+
+
+class AskBack(CamelModel):
+    message: str
+    missing_fields: list[MissingField]
+
+
+class ClassificationReason(CamelModel):
+    work_type: str
+    keyword: str
+
+
+class Classification(CamelModel):
+    work_types: list[str]
+    high_risk: bool | None = Field(description="작업유형을 못 읽으면 null(모름)")
+    required_permits: list[PermitFormType]
+    can_start_before_approval: bool
+    reasons: list[ClassificationReason] = Field(default_factory=list)
+    excluded: list[str] = Field(default_factory=list, description="부정돼서 뺀 표현 (예: '크레인 안 씀')")
+    out_of_scope: list[str] = Field(default_factory=list, description="고위험이지만 1개월 범위 밖이라 허가서를 만들지 않은 작업유형")
+
+
+class EvidenceItemDto(CamelModel):
+    id: str
+    doc_id: str
+    corpus: str
+    source: str
+    snippet: str
+    score: float
+    round: int
+    matched_by: list[str]
+
+
+class RequirementDto(CamelModel):
+    key: str
+    work_type: str
+    description: str
+    satisfied: bool
+    evidence_ids: list[str]
+
+
+class SearchFailureDto(BaseModel):
+    round: int
+    corpus: str
+    query: str
+    code: str
+    reason: str
+
+
+class EvidenceSummary(CamelModel):
+    plan_source: Literal["llm", "fallback"]
+    rounds: int
+    items: list[EvidenceItemDto]
+    requirements: list[RequirementDto]
+    missing: list[str]
+    search_failures: list[SearchFailureDto]
+
+
+class RegulatoryTagDto(CamelModel):
+    code: str
+    label: str
+    law: str
+    evidence: list[str] = Field(default_factory=list)
+
+
+class MsdsDto(CamelModel):
+    query: str
+    found: bool
+    name: str | None = None
+    cas_no: str | None = None
+    ghs_classes: list[str] = Field(default_factory=list)
+    hazards: list[str] = Field(default_factory=list)
+    first_aid: str | None = None
+    regulations: list[str] = Field(default_factory=list)
+    regulatory_tags: list[RegulatoryTagDto] = Field(default_factory=list)
+    source: str | None = None
+
+
+class RuleEvaluationDto(CamelModel):
+    rule_code: str
+    title: str
+    status: Literal["PASS", "FAIL", "MISSING", "CHECK"]
+    severity: Literal["BLOCK", "WARN"]
+    message: str
+    basis: str
+
+
+class RuleCheckDto(BaseModel):
+    blocked: bool
+    evaluations: list[RuleEvaluationDto]
+    conflicts: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class Drafts(CamelModel):
+    risk_assessment: RiskAssessmentDraft
+    permits: list[PermitDraft]
+    inspection_checklist: InspectionChecklistDraft
+    tbm: TbmDraft
+
+
+class ApprovalGate(CamelModel):
+    can_request: bool
+    reasons: list[str]
+
+
+class VerificationIssue(BaseModel):
+    code: str
+    message: str
+    target: str | None = None
+
+
+class GuidanceNote(BaseModel):
+    title: str
+    why: str
+
+
+class AgentStepDto(CamelModel):
+    """agent_steps 한 줄. kind=TOOL이면 tool_name이 도구 이름, PHASE면 루프 단계(계획·충분성·판단·검증)."""
+
+    seq: int
+    kind: Literal["TOOL", "PHASE"]
+    name: str
+    tool_name: str | None
+    status: Literal["OK", "ERROR"]
+    input: dict[str, Any]
+    output: dict[str, Any]
+    elapsed_ms: int
+    error_code: str | None = None
+    # Spring이 요청에 실어 보낸 값을 그대로 채운다. 개발 확인용 경로(/api/v1/test)는 id가 없어 null.
+    run_id: PositiveId | None = None
+    site_id: PositiveId | None = None
+
+class LlmSources(BaseModel):
+    plan: Literal["llm", "fallback"] | None = None
+    judgment: Literal["llm", "fallback"] | None = None
+
+
+class RouteInfo(CamelModel):
+    """채팅이 작업 등록이 아니라 다른 화면의 일로 이어질 때의 안내 (감사 대응). 작업 등록 응답에서는 null.
+
+    target=AUDIT_REPORT: 초안(drafts)은 없다. Spring이 dateFrom~dateTo로 감사 보고서 만들기를 시작하고,
+    채팅은 그 보고서가 끝나면 감사 대응 화면으로 가는 버튼을 보인다 (app/agent/scenario/audit_route_handler.py).
+    """
+
+    target: Literal["AUDIT_REPORT"]
+    date_from: str = Field(description="YYYY-MM-DD")
+    date_to: str = Field(description="YYYY-MM-DD")
+    message: str = Field(description="채팅창에 보일 안내 문구")
+
+
+class WorkRegisterResult(CamelModel):
+    run_status: Literal["WAITING_INPUT", "DONE"]
+    slots: WorkSlots
+    ask: AskBack | None = None
+    classification: Classification
+    evidence: EvidenceSummary | None = None
+    msds: list[MsdsDto] = Field(default_factory=list)
+    rule_check: RuleCheckDto | None = None
+    drafts: Drafts | None = None
+    citations: list[Citation] = Field(default_factory=list, description="초안 전체에서 쓴 근거 (evidence_citations 저장용, 중복 제거)")
+    approval_gate: ApprovalGate | None = None
+    verification: list[VerificationIssue] = Field(default_factory=list)
+    guidance: list[GuidanceNote] = Field(default_factory=list)
+    llm_sources: LlmSources = Field(default_factory=LlmSources)
+    route: RouteInfo | None = Field(
+        default=None, description="작업 등록이 아닌 화면으로 이어질 때만 (감사 대응: target=AUDIT_REPORT)"
+    )
+    steps: list[AgentStepDto] = Field(default_factory=list)
+
+
+class ToolInfo(BaseModel):
+    name: str
+    owner: str
+    mock: bool
+    description: str

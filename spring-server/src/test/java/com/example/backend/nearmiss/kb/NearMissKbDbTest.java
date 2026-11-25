@@ -1,0 +1,161 @@
+package com.example.backend.nearmiss.kb;
+
+import com.example.backend.common.exception.ErrorCode;
+import com.example.backend.nearmiss.dto.NearMissResponse;
+import com.example.backend.nearmiss.dto.ReportNearMissRequest;
+import com.example.backend.nearmiss.dto.SaveTagsRequest;
+import com.example.backend.nearmiss.dto.SaveTagsRequest.Tag;
+import com.example.backend.nearmiss.service.NearMissService;
+import com.example.backend.site.dto.ZoneRequest;
+import com.example.backend.site.entity.Site;
+import com.example.backend.site.entity.SiteMember;
+import com.example.backend.site.entity.SiteMode;
+import com.example.backend.site.entity.SiteRole;
+import com.example.backend.site.repository.SiteMemberRepository;
+import com.example.backend.site.repository.SiteRepository;
+import com.example.backend.site.service.ZoneService;
+import com.example.backend.tag.entity.TagAxis;
+import com.example.backend.tag.entity.TagSource;
+import com.example.backend.user.entity.EmailVerifiedVia;
+import com.example.backend.user.entity.User;
+import com.example.backend.user.entity.UserRole;
+import com.example.backend.user.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+import static com.example.backend.support.TestFixtures.expectCode;
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** 아차사고 태그 저장 → RAG 이벤트, 청크 만들기, 적재·삭제 호출 (실제 DB, 끝나면 롤백) */
+@SpringBootTest
+@Transactional
+@RecordApplicationEvents
+@DisplayName("아차사고 RAG 적재 (실제 DB)")
+class NearMissKbDbTest {
+
+    @Autowired NearMissService service;
+    @Autowired NearMissKbDocuments documents;
+    @Autowired NearMissKbBackfill backfill;
+    @Autowired ZoneService zoneService;
+    @Autowired UserRepository userRepository;
+    @Autowired SiteRepository siteRepository;
+    @Autowired SiteMemberRepository siteMemberRepository;
+    @Autowired ApplicationEvents events;
+
+    private Long siteId;
+    private Long reporter;
+    private Long zoneId;
+
+    @BeforeEach
+    void setUp() {
+        String tag = UUID.randomUUID().toString().substring(0, 8);
+        Long adminId = userRepository.save(User.bootstrapAdmin("kb-admin-" + tag + "@example.com", "HASH", LocalDateTime.now())).getId();
+        siteId = siteRepository.save(new Site("적재현장-" + tag, SiteMode.VERIFY)).getId();
+        User u = new User("kb-" + UUID.randomUUID() + "@example.com", "HASH", "보고자");
+        u.verifyEmail(EmailVerifiedVia.ADMIN, LocalDateTime.now());
+        u.approve(UserRole.MEMBER);
+        reporter = userRepository.save(u).getId();
+        siteMemberRepository.save(new SiteMember(reporter, siteId, SiteRole.WRITER, adminId));
+        zoneId = zoneService.create(adminId, siteId, new ZoneRequest("R-201", "배관 랙", null, true, null, null)).zoneId();
+    }
+
+    @Test
+    @DisplayName("보고만 하면 보내지 않고, 태그 저장 → 적재, 태그를 모두 지우면 → 삭제")
+    void tagsSavedThenDocument() {
+        NearMissResponse n = service.report(reporter, new ReportNearMissRequest(siteId, zoneId, null, "발판 미끄러짐",
+                LocalDateTime.now().minusHours(1), "점검 중 발판이 미끄러져 넘어질 뻔함", "발판 고정"));
+        assertThat(events.stream(NearMissTagsSavedEvent.class)).isEmpty();
+        assertThat(documents.document(n.nearMissId())).isEmpty();   // 태그가 없으면 적재할 것이 없음
+
+        service.saveTags(reporter, n.nearMissId(), new SaveTagsRequest(n.lockVersion(), List.of(
+                new Tag(TagAxis.SEVERITY, "NEAR_MISS", TagSource.USER, null),
+                new Tag(TagAxis.ACCIDENT_TYPE, "FALL", TagSource.USER, null),
+                new Tag(TagAxis.WORK_TYPE, "HEIGHT", TagSource.USER, null))));
+        assertThat(events.stream(NearMissTagsSavedEvent.class).map(NearMissTagsSavedEvent::nearMissId))
+                .containsExactly(n.nearMissId());
+
+        KbIngestClient.Chunk c = documents.document(n.nearMissId()).orElseThrow();
+        assertThat(c.pointId()).isEqualTo(NearMissKbDocuments.pointId(n.nearMissId()));
+        assertThat(c.payload()).containsEntry("site_id", siteId).containsEntry("kb_source_id", n.nearMissId())
+                .containsEntry("source_type", "NEAR_MISS").containsEntry("zone_id", zoneId)
+                .containsEntry("severity", List.of("NEAR_MISS")).containsEntry("accident_type", List.of("FALL"))
+                .containsEntry("work_type", List.of("HEIGHT"));
+        assertThat(c.text()).startsWith("발판 미끄러짐. 점검 중").contains("장소: 배관 랙.", "발생형태: 떨어짐.", "작업: 고소.", "중대도: 아차사고.", "즉시 조치: 발판 고정");
+
+        // 태그 있음 → 적재: 켜져 있으면 kb_accidents 로 한 건, 꺼져 있으면 부르지 않음, 실패해도 예외를 밖으로 내지 않음
+        List<String> calls = new ArrayList<>();
+        KbIngestClient fake = recording(calls);
+        assertThat(new NearMissKbListener(fake, documents).sync(n.nearMissId())).isTrue();
+        assertThat(calls).containsExactly("upsert kb_accidents:" + c.pointId());
+        assertThat(new NearMissKbListener(new NoKbIngestClient(), documents).sync(n.nearMissId())).isFalse();
+        KbIngestClient broken = new KbIngestClient() {
+            public boolean enabled() { return true; }
+            public int upsert(String collection, List<Chunk> chunks) { throw new IllegalStateException("kb-ingest 응답 502"); }
+            public int delete(String collection, List<String> pointIds) { throw new IllegalStateException("kb-ingest 응답 502"); }
+        };
+        assertThat(new NearMissKbListener(broken, documents).sync(n.nearMissId())).isFalse();
+
+        // 태그를 모두 지움 → 이벤트는 나가고, 같은 point_id 로 삭제
+        NearMissResponse latest = service.get(reporter, n.nearMissId());
+        service.saveTags(reporter, n.nearMissId(), new SaveTagsRequest(latest.lockVersion(), List.of()));
+        assertThat(events.stream(NearMissTagsSavedEvent.class)).hasSize(2);
+        assertThat(documents.document(n.nearMissId())).isEmpty();
+        calls.clear();
+        assertThat(new NearMissKbListener(fake, documents).sync(n.nearMissId())).isTrue();
+        assertThat(calls).containsExactly("delete kb_accidents:" + c.pointId());
+        assertThat(new NearMissKbListener(broken, documents).sync(n.nearMissId())).isFalse();
+    }
+
+    private static KbIngestClient recording(List<String> calls) {
+        return new KbIngestClient() {
+            public boolean enabled() { return true; }
+            public int upsert(String collection, List<Chunk> chunks) {
+                calls.add("upsert " + collection + ":" + chunks.get(0).pointId());
+                return 1;
+            }
+            public int delete(String collection, List<String> pointIds) {
+                calls.add("delete " + collection + ":" + pointIds.get(0));
+                return pointIds.size();
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("일괄 적재: 사람이 태그를 저장한 보고만 대상(현장 지정), 실패한 번호를 돌려준다. 적재가 꺼져 있으면 409")
+    void backfillConfirmedOnly() {
+        NearMissResponse confirmed = service.report(reporter, new ReportNearMissRequest(siteId, zoneId, null, "발판 미끄러짐",
+                LocalDateTime.now().minusHours(2), "점검 중 발판이 미끄러짐", null));
+        service.saveTags(reporter, confirmed.nearMissId(), new SaveTagsRequest(confirmed.lockVersion(), List.of(
+                new Tag(TagAxis.SEVERITY, "NEAR_MISS", TagSource.USER, null))));
+        NearMissResponse failing = service.report(reporter, new ReportNearMissRequest(siteId, zoneId, null, "공구 낙하",
+                LocalDateTime.now().minusHours(1), "상부에서 공구가 떨어질 뻔함", null));
+        service.saveTags(reporter, failing.nearMissId(), new SaveTagsRequest(failing.lockVersion(), List.of(
+                new Tag(TagAxis.SEVERITY, "NEAR_MISS", TagSource.USER, null))));
+        NearMissResponse onlyReported = service.report(reporter, new ReportNearMissRequest(siteId, zoneId, null, "사다리 흔들림",
+                LocalDateTime.now().minusMinutes(30), "사다리 하부 고정 불량", null));
+
+        List<Long> seen = new ArrayList<>();
+        NearMissKbBackfill.Result result = backfill.sweep(siteId, id -> {
+            seen.add(id);
+            return !id.equals(failing.nearMissId());
+        });
+
+        assertThat(seen).containsExactly(confirmed.nearMissId(), failing.nearMissId()).doesNotContain(onlyReported.nearMissId());
+        assertThat(result.total()).isEqualTo(2);
+        assertThat(result.synced()).isEqualTo(1);
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.failedIds()).containsExactly(failing.nearMissId());
+        expectCode(() -> backfill.run(siteId), ErrorCode.INVALID_STATE);   // 테스트는 app.kb-ingest.client=none
+    }
+}

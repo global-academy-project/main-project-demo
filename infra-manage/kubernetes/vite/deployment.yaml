@@ -1,0 +1,31 @@
+# Note:
+# Vite는 별도의 Volume을 사용하지 않기 때문에 common-volume을 사용하지 않는다.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vite-deployment
+spec:
+  selector:
+    matchLabels:
+      app: vite
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: vite
+    spec:
+      containers:
+      - name: myapp
+        image: vite-web:20261125100632942
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        ports:
+        - name: vite-net
+          containerPort: 50001

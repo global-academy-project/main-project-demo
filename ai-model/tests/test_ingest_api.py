@@ -1,0 +1,1375 @@
+import json
+from copy import deepcopy
+from types import SimpleNamespace
+from uuid import NAMESPACE_URL, uuid5
+
+from fastapi.testclient import TestClient
+import pytest
+
+from app import ingest_main
+from app.ingest import chunks as ingest_chunks
+from app.ingest import documents as document_ingest
+from app.ingest import local_vectors
+from app.ingest import points as ingest_points
+from app.ingest.schemas import PublicAccidentIngestRequest, PublicAccidentTags, PublicGuideTags
+
+
+def _configure_environment(monkeypatch):
+    monkeypatch.setenv("KB_INGEST_API_TOKEN", "ingest-token")
+    monkeypatch.setenv("QDRANT_API_KEY", "qdrant-write-key")
+    monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")
+    monkeypatch.setenv("EMBEDDING_URL", "http://embedding:60110/v1/embeddings")
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    monkeypatch.setenv("EMBEDDING_DIM", "1024")
+
+
+def test_public_tag_metadata_links_cas_to_normalized_ghs():
+    tags = PublicAccidentTags(
+        cas=["108-88-3"],
+        ghs=["FLAMMABLE_LIQUID"],
+        substances=[{
+            "cas": "108-88-3",
+            "ghs": ["FLAMMABLE_LIQUID"],
+            "source": "KOSHA_MSDS",
+        }],
+    )
+    assert tags.tag_status["substance"] == "KNOWN"
+    assert tags.tag_status["ghs"] == "KNOWN"
+
+    with pytest.raises(ValueError, match="cas 배열은 substances"):
+        PublicAccidentTags(cas=["108-88-3"], substances=[])
+
+
+def test_public_guide_marks_nonapplicable_and_unknown_axes():
+    tags = PublicGuideTags()
+    assert tags.tag_status["severity"] == "NOT_APPLICABLE"
+    assert tags.tag_status["accident_type"] == "NOT_APPLICABLE"
+    assert tags.tag_status["hazard"] == "UNKNOWN"
+    assert tags.tag_status["substance"] == "UNKNOWN"
+
+
+def _request_body():
+    return {
+        "collection": "kb_guides",
+        "chunks": [
+            {
+                "point_id": "00000000-0000-0000-0000-000000000001",
+                "text": "작업 전 위험요인을 확인합니다.",
+                "payload": {
+                    "kb_source_id": 1,
+                    "kb_chunk_id": 2,
+                    "source_type": "KOSHA_GUIDE",
+                    "site_id": 0,
+                    "flagged": False,
+                    "title": "안전 가이드",
+                    "text": "작업 전 위험요인을 확인합니다.",
+                },
+            }
+        ],
+    }
+
+
+def _near_miss_request_body():
+    near_miss_id = 12
+    text = "배관 랙 발판 미끄러짐. 검토 태그: NEAR_MISS, FALL, HEIGHT."
+    return {
+        "collection": "kb_accidents",
+        "chunks": [
+            {
+                "point_id": str(uuid5(NAMESPACE_URL, f"NEAR_MISS:{near_miss_id}:0")),
+                "text": text,
+                "payload": {
+                    "kb_source_id": near_miss_id,
+                    "kb_chunk_id": near_miss_id,
+                    "source_type": "NEAR_MISS",
+                    "site_id": 3,
+                    "flagged": False,
+                    "severity": ["NEAR_MISS"],
+                    "accident_type": ["FALL"],
+                    "hazard": ["HUMAN"],
+                    "work_type": ["HEIGHT"],
+                    "cas": [],
+                    "ghs": [],
+                    "year": 2026,
+                    "occurred_at": "2026-11-03T10:20:00",
+                    "zone_id": 5,
+                    "title": "배관 랙 발판 미끄러짐",
+                    "text": text,
+                },
+            }
+        ],
+    }
+
+
+def _post_split_ingest_endpoint(monkeypatch, path, body, expected_collection, expected_source_type):
+    from app.rag.catalog import RegisteredChunk, RegisteredSource
+
+    _configure_environment(monkeypatch)
+    calls = {}
+
+    monkeypatch.setattr(
+        document_ingest.RagSettings,
+        "from_env",
+        staticmethod(lambda: SimpleNamespace(embedding_model="BAAI/bge-m3")),
+    )
+
+    def register(settings, collection, source, chunks):
+        calls["registration"] = (collection, source, chunks)
+        return RegisteredSource(
+            source_id=41,
+            chunks=tuple(
+                RegisteredChunk(
+                    chunk_index=chunk["chunk_index"],
+                    chunk_id=101 + chunk["chunk_index"],
+                    point_id=str(uuid5(
+                        NAMESPACE_URL,
+                        f"{source['source_type']}:{source['external_id']}:{chunk['chunk_index']}",
+                    )),
+                )
+                for chunk in chunks
+            ),
+            stale_point_ids=(),
+            stale_chunk_ids=(),
+        )
+
+    def validate(settings, collection, chunks):
+        calls["validated"] = (collection, chunks)
+
+    def index(settings, collection, chunks, *, write_api_key):
+        calls["indexed"] = (collection, chunks, write_api_key)
+        return len(chunks)
+
+    monkeypatch.setattr(document_ingest, "register_source_chunks", register)
+    monkeypatch.setattr(document_ingest, "validate_chunks", validate)
+    monkeypatch.setattr(document_ingest, "index_chunks", index)
+    monkeypatch.setattr(document_ingest, "delete_stale_chunks", lambda *args: None)
+    monkeypatch.setattr(document_ingest, "mark_sources_embedded", lambda *args: None)
+
+    response = TestClient(ingest_main.app).post(
+        path,
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    collection, source, registered_chunks = calls["registration"]
+    assert collection == expected_collection
+    assert source["source_type"] == expected_source_type
+    indexed_collection, chunks, api_key = calls["indexed"]
+    assert indexed_collection == expected_collection
+    assert api_key == "qdrant-write-key"
+    assert chunks[0].point_id == str(uuid5(
+        NAMESPACE_URL,
+        f"{expected_source_type}:{source['external_id']}:{registered_chunks[0]['chunk_index']}",
+    ))
+    return response.json(), chunks[0].payload, source
+
+
+def test_accidents_endpoint_uses_fixed_collection_and_typed_tag_payload(monkeypatch):
+    response, payload, _ = _post_split_ingest_endpoint(
+        monkeypatch,
+        "/ingest/accidents",
+        {
+            "source": {
+                "source_type": "SIF",
+                "external_id": "SIF-001",
+                "title": "거푸집 자재반입, 가공, 운반 – 감전 (2018)",
+                "url": "https://example.test/sif-001",
+                "publisher": "한국산업안전보건공단",
+                "license": "이용허락범위 제한 없음",
+                "content_sha256": "a" * 64,
+            },
+            "chunks": [{
+                "chunk_index": 0,
+                "text": "거푸집 자재반입, 가공, 운반 중 감전 사고가 발생했습니다.",
+                "embedding_text": "거푸집 자재반입, 가공, 운반 – 감전\n거푸집 자재반입, 가공, 운반 중 감전 사고가 발생했습니다.",
+                "locator": "재해개요·유발요인·감소대책(예시)",
+                "token_count": 12,
+                "payload": {
+                    "severity": "FATAL",
+                    "accident_type": ["ELECTRIC"],
+                    "hazard": ["ELECTRICAL"],
+                    "work_type": ["ELECTRICAL"],
+                    "cas": [],
+                    "ghs": [],
+                    "year": 2018,
+                    "natural_key": {
+                        "dataset": "sif",
+                        "record": "SIF-001",
+                        "section": "case",
+                        "part": 0,
+                    },
+                    "tier": "B",
+                    "cate": "건설업",
+                    "disaster_type": "감전",
+                    "situation": None,
+                },
+            }],
+        },
+        "kb_accidents",
+        "SIF",
+    )
+
+    assert response["source_id"] == 41
+    assert response["chunks"][0]["point_id"] == str(uuid5(NAMESPACE_URL, "SIF:SIF-001:0"))
+    assert payload["severity"] == "FATAL"
+    assert payload["accident_type"] == ["ELECTRIC"]
+    assert payload["hazard"] == ["ELECTRICAL"]
+    assert payload["work_type"] == ["ELECTRICAL"]
+    assert payload["tier"] == "B"
+    assert payload["natural_key"] == {
+        "dataset": "sif",
+        "record": "SIF-001",
+        "section": "case",
+        "part": 0,
+    }
+    assert payload["external_id"] == "SIF-001"
+    assert payload["chunk_index"] == 0
+    assert payload["publisher"] == "한국산업안전보건공단"
+    assert payload["license"] == "이용허락범위 제한 없음"
+    assert payload["content_sha256"] == "a" * 64
+    assert payload["disaster_type"] == "감전" and payload["situation"] is None
+    assert payload["kb_source_id"] == 41 and payload["kb_chunk_id"] == 101
+    assert payload["site_id"] == 0
+    assert list(payload)[-2:] == ["kb_source_id", "kb_chunk_id"]
+    assert set(payload) == {
+        "kb_source_id", "kb_chunk_id", "source_type", "site_id", "flagged",
+        "title", "locator", "url", "text", "severity", "accident_type", "hazard",
+        "work_type", "cas", "ghs", "substances", "sif_potential", "tag_status",
+        "tagging_source", "tagging_version", "year", "external_id", "chunk_index",
+        "natural_key", "license", "publisher", "content_sha256", "tier", "cate",
+        "disaster_type", "situation",
+    }
+
+
+def test_guides_endpoint_uses_fixed_collection_and_typed_tag_payload(monkeypatch):
+    _, payload, registered_source = _post_split_ingest_endpoint(
+        monkeypatch,
+        "/ingest/guides",
+        {
+            "source": {
+                "source_type": "LAW",
+                "external_id": "SAFETY-RULE",
+                "title": "산업안전보건기준에 관한 규칙",
+                "file_path": "raw/safety-rule.hwp",
+            },
+            "chunks": [{
+                "chunk_index": 7,
+                "text": "제20조(출입의 금지 등) 사업주는 다음 각 호의 작업 또는 장소에 울타리를 설치해야 합니다.",
+                "embedding_text": "산업안전보건기준에 관한 규칙 > 제1편 총칙 > 제2장 작업장\n제20조(출입의 금지 등) 사업주는 다음 각 호의 작업 또는 장소에 울타리를 설치해야 합니다.",
+                "locator": "제20조 (2/3)",
+                "payload": {
+                    "natural_key": {
+                        "law_key": "SAFETY-RULE",
+                        "article_key": "20",
+                        "part": 1,
+                    },
+                    "article_label": "제20조",
+                    "article_title": "출입의 금지 등",
+                    "parts_total": 3,
+                    "repeated_lead_lines": 2,
+                    "oversize": False,
+                    "path": ["제1편 총칙", "제2장 작업장"],
+                    "hierarchy": {"편": "제1편 총칙", "장": "제2장 작업장"},
+                    "hazard": [],
+                    "work_type": [],
+                    "cas": [],
+                    "year": 2025,
+                    "law_meta": {
+                        "effective_date": "2026-03-02",
+                        "promulgation_no": "고용노동부령 제450호",
+                        "promulgation_date": "2025-09-01",
+                        "amendment_type": "일부개정",
+                        "source_sha256": "b" * 64,
+                    },
+                    "article_sha256": "c" * 64,
+                },
+            }],
+        },
+        "kb_guides",
+        "LAW",
+    )
+
+    assert payload["hazard"] == []
+    assert payload["work_type"] == []
+    assert payload["natural_key"] == {
+        "law_key": "SAFETY-RULE",
+        "article_key": "20",
+        "part": 1,
+    }
+    assert payload["article_label"] == "제20조"
+    assert payload["article_title"] == "출입의 금지 등"
+    assert payload["parts_total"] == 3
+    assert payload["repeated_lead_lines"] == 2
+    assert payload["oversize"] is False
+    assert payload["path"] == ["제1편 총칙", "제2장 작업장"]
+    assert payload["hierarchy"] == {"편": "제1편 총칙", "장": "제2장 작업장"}
+    assert payload["law_meta"]["effective_date"] == "2026-03-02"
+    assert payload["article_sha256"] == "c" * 64
+    assert payload["embed_text"].startswith("산업안전보건기준에 관한 규칙")
+    assert payload["file_path"] == "raw/safety-rule.hwp"
+    assert payload["collection"] == "kb_guides"
+    assert payload["point_id"] is None
+    assert payload["kb_source_id"] == 41 and payload["kb_chunk_id"] == 108
+    assert registered_source["content_sha256"] == "b" * 64
+    assert set(payload) == {
+        "kb_source_id", "kb_chunk_id", "source_type", "site_id", "flagged",
+        "title", "locator", "url", "text", "hazard", "work_type", "cas", "year",
+        "ghs", "substances", "sif_potential", "tag_status", "tagging_source", "tagging_version",
+        "natural_key", "article_label", "article_title", "parts_total",
+        "repeated_lead_lines", "oversize", "path", "hierarchy", "law_meta",
+        "article_sha256", "embed_text", "collection", "file_path", "point_id",
+    }
+
+
+def test_accidents_endpoint_rejects_tag_codes_outside_existing_qdrant_vocab():
+    with pytest.raises(ValueError, match="기존 태그 코드"):
+        PublicAccidentIngestRequest.model_validate(
+            {
+                "source": {
+                    "source_type": "SIF",
+                    "external_id": "SIF-CODE-TEST",
+                    "title": "감전 사례",
+                    "url": "https://example.test/sif-code-test",
+                },
+                "chunks": [{
+                    "chunk_index": 0,
+                    "text": "전기 작업 중 감전 사고가 발생했습니다.",
+                    "payload": {
+                        "severity": "FATAL",
+                        "accident_type": ["ELECTRIC"],
+                        "hazard": ["ELECTRICAL"],
+                        "work_type": ["ELECTRICAL_WORK"],
+                        "cas": [],
+                        "ghs": [],
+                        "year": 2018,
+                        "natural_key": {
+                            "dataset": "sif",
+                            "record": "SIF-CODE-TEST",
+                            "section": "case",
+                            "part": 0,
+                        },
+                        "tier": "B",
+                        "cate": "건설업",
+                        "disaster_type": "감전",
+                        "situation": None,
+                    },
+                }],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/ingest/accidents",
+            {
+                "source": {
+                    "source_type": "LAW",
+                    "external_id": "x",
+                    "title": "x",
+                    "url": "https://example.test/x",
+                },
+                "chunks": [{"chunk_index": 0, "text": "x"}],
+            },
+        ),
+        (
+            "/ingest/guides",
+            {
+                "source": {
+                    "source_type": "SIF",
+                    "external_id": "x",
+                    "title": "x",
+                    "url": "https://example.test/x",
+                },
+                "chunks": [{"chunk_index": 0, "text": "x"}],
+            },
+        ),
+        (
+            "/ingest/accidents",
+            {
+                "source": {
+                    "source_type": "SIF",
+                    "external_id": "x",
+                    "title": "x",
+                    "url": "https://example.test/x",
+                },
+                "chunks": [{
+                    "chunk_index": 0,
+                    "text": "x",
+                    "payload": {
+                        "accident_type": ["HOT_WORK"],
+                        "natural_key": {
+                            "dataset": "sif",
+                            "record": "x",
+                            "section": "case",
+                            "part": 0,
+                        },
+                        "tier": "B",
+                        "cate": "건설업",
+                        "disaster_type": None,
+                        "situation": None,
+                    },
+                }],
+            },
+        ),
+    ],
+)
+def test_split_ingest_endpoints_reject_wrong_collection_or_tag_shapes(monkeypatch, path, body):
+    _configure_environment(monkeypatch)
+    response = TestClient(ingest_main.app).post(
+        path,
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 422
+
+
+def test_ingest_chunks_authenticates_and_indexes(monkeypatch):
+    _configure_environment(monkeypatch)
+    monkeypatch.setenv("KB_INGEST_API_TOKEN", "ingest-token\r")
+    monkeypatch.setenv("QDRANT_API_KEY", "qdrant-write-key\r")
+    calls = []
+
+    def fake_index_chunks(settings, collection, chunks, *, write_api_key):
+        calls.append((settings, collection, chunks, write_api_key))
+        return len(chunks)
+
+    monkeypatch.setattr(ingest_chunks, "validate_chunks", lambda settings, collection, chunks: None)
+    monkeypatch.setattr(ingest_chunks, "index_chunks", fake_index_chunks)
+    client = TestClient(ingest_main.app)
+    response = client.post(
+        "/ingest/chunks",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=_request_body(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"indexed": 1}
+    settings, collection, chunks, write_api_key = calls[0]
+    assert settings.embedding_url == "http://embedding:60110/v1/embeddings"
+    assert collection == "kb_guides"
+    assert chunks[0].point_id == "00000000-0000-0000-0000-000000000001"
+    assert chunks[0].payload["flagged"] is False
+    assert write_api_key == "qdrant-write-key"
+
+
+def test_save_local_vectors_embeds_in_batches_without_qdrant(monkeypatch, tmp_path):
+    from app.rag.embedding import HybridEmbedding, SparseVector
+
+    _configure_environment(monkeypatch)
+    monkeypatch.delenv("QDRANT_API_KEY")
+    monkeypatch.setenv("LOCAL_VECTOR_DIR", str(tmp_path / "vectors"))
+    body = _request_body()
+    body["dataset_id"] = "law-v1"
+    body["chunks"] = []
+    for index in range(9):
+        chunk = deepcopy(_request_body()["chunks"][0])
+        chunk["point_id"] = str(uuid5(NAMESPACE_URL, f"LAW:local:{index}"))
+        chunk["text"] = f"법령 청크 {index}"
+        chunk["payload"]["kb_chunk_id"] = index + 1
+        chunk["payload"]["text"] = chunk["text"]
+        body["chunks"].append(chunk)
+
+    batch_calls = []
+
+    def fake_embed_texts(settings, texts):
+        batch_calls.append(texts)
+        return [
+            HybridEmbedding([0.6, 0.8], SparseVector([4], [1.0]))
+            for _ in texts
+        ]
+
+    monkeypatch.setattr(local_vectors, "embed_texts", fake_embed_texts)
+    response = TestClient(ingest_main.app).post(
+        "/ingest/vectors/local",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "saved": 9,
+        "dataset_id": "law-v1",
+        "file": "law-v1.jsonl",
+        "model": "BAAI/bge-m3",
+    }
+    assert [len(batch) for batch in batch_calls] == [8, 1]
+    saved = [
+        json.loads(line)
+        for line in (tmp_path / "vectors" / "law-v1.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(saved) == 9
+    assert saved[0]["collection"] == "kb_guides"
+    assert saved[0]["model"] == "BAAI/bge-m3"
+    assert saved[0]["vector"] == {
+        "dense": [0.6, 0.8],
+        "sparse": {"indices": [4], "values": [1.0]},
+    }
+    assert saved[0]["payload"]["text"] == "법령 청크 0"
+
+
+def test_save_local_vectors_requires_auth_and_safe_dataset_id(monkeypatch, tmp_path):
+    _configure_environment(monkeypatch)
+    monkeypatch.setenv("LOCAL_VECTOR_DIR", str(tmp_path))
+    body = _request_body()
+    body["dataset_id"] = "../outside"
+    client = TestClient(ingest_main.app)
+
+    unauthorized = client.post("/ingest/vectors/local", json=body)
+    invalid_id = client.post(
+        "/ingest/vectors/local",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert unauthorized.status_code == 401
+    assert invalid_id.status_code == 422
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_save_local_vectors_failure_keeps_previous_file(monkeypatch, tmp_path):
+    from app.rag.errors import RagBackendError
+
+    _configure_environment(monkeypatch)
+    output_dir = tmp_path / "vectors"
+    output_dir.mkdir()
+    monkeypatch.setenv("LOCAL_VECTOR_DIR", str(output_dir))
+    target = output_dir / "law-v1.jsonl"
+    target.write_text("previous data\n", encoding="utf-8")
+
+    def fail_embedding(settings, texts):
+        raise RagBackendError("embedding unavailable")
+
+    monkeypatch.setattr(local_vectors, "embed_texts", fail_embedding)
+    body = _request_body()
+    body["dataset_id"] = "law-v1"
+    response = TestClient(ingest_main.app).post(
+        "/ingest/vectors/local",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "임베딩 요청이 실패했습니다."}
+    assert target.read_text(encoding="utf-8") == "previous data\n"
+    assert sorted(path.name for path in output_dir.iterdir()) == ["law-v1.jsonl"]
+
+
+def test_save_local_chunk_file_vectors_reads_validated_chunks(monkeypatch, tmp_path):
+    from app.rag.embedding import HybridEmbedding, SparseVector
+    from app.rag.catalog import RegisteredSource
+
+    _configure_environment(monkeypatch)
+    chunk_dir = tmp_path / "out" / "guides" / "law"
+    chunk_dir.mkdir(parents=True)
+    output_dir = tmp_path / "vectors"
+    monkeypatch.setenv("LOCAL_CHUNK_ROOT", str(tmp_path / "out"))
+    monkeypatch.setenv("LOCAL_VECTOR_DIR", str(output_dir))
+
+    records = []
+    for index in range(9):
+        records.append({
+            "natural_key": {
+                "law_key": "산업안전보건기준에관한규칙",
+                "article_key": str(index + 1),
+                "part": 0,
+            },
+            "text": f"제{index + 1}조 원문",
+            "embed_text": f"법령 머리말\n제{index + 1}조 원문",
+            "collection": "kb_guides",
+            "source_type": "LAW",
+            "title": "산업안전보건기준에관한규칙",
+            "locator": f"제{index + 1}조",
+            "site_id": 0,
+            "flagged": False,
+            "url": "https://example.test/law",
+            "file_path": "raw/law.xml",
+            "hazard": [],
+            "work_type": [],
+            "cas": [],
+            "ghs": [],
+            "substances": [],
+            "sif_potential": None,
+            "tag_status": {
+                "severity": "NOT_APPLICABLE", "accident_type": "NOT_APPLICABLE",
+                "hazard": "UNKNOWN", "work_type": "UNKNOWN", "substance": "UNKNOWN",
+                "ghs": "UNKNOWN", "sif_potential": "NOT_APPLICABLE",
+            },
+            "tagging_source": "RULES_DISABLED",
+            "tagging_version": "law-hierarchy-v1",
+            "law_meta": {"source_sha256": "a" * 64},
+            "kb_source_id": None,
+            "kb_chunk_id": None,
+            "point_id": None,
+        })
+    (chunk_dir / "05_chunks.jsonl").write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    (chunk_dir / "06_validation.json").write_text(
+        json.dumps({"ok": True, "summary": {"chunks": len(records)}}),
+        encoding="utf-8",
+    )
+    (chunk_dir / "chunk_index_map.json").write_text(
+        json.dumps({
+            "source_type": "LAW",
+            "external_id": "산업안전보건기준에관한규칙",
+            "indexes": {
+                f"산업안전보건기준에관한규칙|{index + 1}|0": index
+                for index in range(len(records))
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    batch_calls = []
+    registration_calls = []
+
+    def fake_register_sources_chunks(settings, collection, sources_and_chunks):
+        registration_calls.append((collection, sources_and_chunks))
+        registrations = []
+        for source, chunks in sources_and_chunks:
+            registrations.append(
+                RegisteredSource(
+                    source_id=41,
+                    chunks=tuple(
+                        ingest_main.RegisteredChunk(
+                            chunk_index=chunk["chunk_index"],
+                            chunk_id=101 + chunk["chunk_index"],
+                            point_id=str(uuid5(
+                                NAMESPACE_URL,
+                                f"LAW:{source['external_id']}:{chunk['chunk_index']}",
+                            )),
+                        )
+                        for chunk in chunks
+                    ),
+                    stale_point_ids=(),
+                    stale_chunk_ids=(),
+                )
+            )
+        return tuple(registrations)
+
+    def fake_embed_texts(settings, texts):
+        batch_calls.append(texts)
+        return [
+            HybridEmbedding([0.6, 0.8], SparseVector([4], [1.0]))
+            for _ in texts
+        ]
+
+    monkeypatch.setattr(local_vectors, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(local_vectors, "register_sources_chunks", fake_register_sources_chunks)
+    response = TestClient(ingest_main.app).post(
+        "/ingest/vectors/local/file",
+        headers={"Authorization": "Bearer ingest-token"},
+        json={
+            "dataset_id": "law-local",
+            "data_type": "guides",
+            "subdir": "law",
+            "chunk_file": "05_chunks.jsonl",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["saved"] == 9
+    assert response.json()["file"] == "law-local.jsonl"
+    assert registration_calls[0][0] == "kb_guides"
+    assert registration_calls[0][1][0][0]["source_type"] == "LAW"
+    assert registration_calls[0][1][0][0]["external_id"] == "산업안전보건기준에관한규칙"
+    assert len(registration_calls[0][1][0][1]) == 9
+    assert [len(batch) for batch in batch_calls] == [8, 1]
+    saved = [
+        json.loads(line)
+        for line in (output_dir / "law-local.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(saved) == 9
+    assert set(saved[0]) == {"id", "vector", "payload"}
+    assert saved[0]["id"] == str(uuid5(NAMESPACE_URL, "LAW:산업안전보건기준에관한규칙:0"))
+    assert saved[0]["vector"]["dense"] == [0.6, 0.8]
+    assert saved[0]["vector"]["sparse"] == {"indices": [4], "values": [1.0]}
+    assert saved[0]["payload"]["text"] == records[0]["text"]
+    assert saved[0]["payload"]["kb_source_id"] == 41
+    assert saved[0]["payload"]["kb_chunk_id"] == 101
+
+
+def test_save_local_chunk_file_vectors_supports_sif_records(monkeypatch, tmp_path):
+    from app.rag.embedding import HybridEmbedding, SparseVector
+    from app.rag.catalog import RegisteredSource
+
+    _configure_environment(monkeypatch)
+    chunk_dir = tmp_path / "out" / "accidents" / "law"
+    chunk_dir.mkdir(parents=True)
+    output_dir = tmp_path / "vectors"
+    monkeypatch.setenv("LOCAL_CHUNK_ROOT", str(tmp_path / "out"))
+    monkeypatch.setenv("LOCAL_VECTOR_DIR", str(output_dir))
+    external_id = "SIF-test-case"
+    record = {
+        "natural_key": {
+            "dataset": "sif",
+            "record": external_id,
+            "section": "case",
+            "part": 0,
+        },
+        "external_id": external_id,
+        "chunk_index": 0,
+        "text": "[재해개요]\n사고 원문",
+        "embed_text": "SIF > 작업 > 사고 원문",
+        "title": "SIF 안전 사례",
+        "locator": "재해개요·유발요인·감소대책(예시)",
+        "source_type": "SIF",
+        "collection": "kb_accidents",
+        "site_id": 0,
+        "flagged": False,
+        "year": 2024,
+        "severity": "FATAL",
+        "accident_type": ["FIRE"],
+        "hazard": ["CHEMICAL"],
+        "work_type": ["HOT"],
+        "cas": [],
+        "ghs": [],
+        "substances": [],
+        "sif_potential": None,
+        "tag_status": {
+            "severity": "KNOWN", "accident_type": "KNOWN", "hazard": "KNOWN",
+            "work_type": "KNOWN", "substance": "UNKNOWN", "ghs": "UNKNOWN",
+            "sif_potential": "UNKNOWN",
+        },
+        "tagging_source": "SIF_STRUCTURED_RULES",
+        "tagging_version": "sif-structured-v1+tag-codes-v5",
+        "url": "https://example.test/sif",
+        "kb_source_id": None,
+        "kb_chunk_id": None,
+        "point_id": None,
+    }
+    (chunk_dir / "05_chunks.jsonl").write_text(
+        json.dumps(record, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    (chunk_dir / "06_validation.json").write_text(
+        json.dumps({"ok": True, "law": "other", "summary": {"chunks": 695}}),
+        encoding="utf-8",
+    )
+
+    registration_calls = []
+
+    def fake_register_sources_chunks(settings, collection, sources_and_chunks):
+        registration_calls.append((collection, sources_and_chunks))
+        return (
+            RegisteredSource(
+                source_id=41,
+                chunks=(
+                    ingest_main.RegisteredChunk(
+                        chunk_index=sources_and_chunks[0][1][0]["chunk_index"],
+                        chunk_id=101,
+                        point_id=str(uuid5(
+                            NAMESPACE_URL,
+                            f"SIF:{sources_and_chunks[0][0]['external_id']}:{sources_and_chunks[0][1][0]['chunk_index']}",
+                        )),
+                    ),
+                ),
+                stale_point_ids=(),
+                stale_chunk_ids=(),
+            ),
+        )
+
+    monkeypatch.setattr(
+        local_vectors,
+        "embed_texts",
+        lambda settings, texts: [HybridEmbedding([0.6, 0.8], SparseVector([4], [1.0]))],
+    )
+    monkeypatch.setattr(local_vectors, "register_sources_chunks", fake_register_sources_chunks)
+    response = TestClient(ingest_main.app).post(
+        "/ingest/vectors/local/file",
+        headers={"Authorization": "Bearer ingest-token"},
+        json={
+            "dataset_id": "sif-test",
+            "data_type": "accidents",
+            "subdir": "law",
+            "chunk_file": "05_chunks.jsonl",
+            "validation_file": "AQu7Btppx9t.json",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["collection"] == "kb_accidents"
+    assert response.json()["validation"] == "structural"
+    assert registration_calls[0][0] == "kb_accidents"
+    assert registration_calls[0][1][0][0]["source_type"] == "SIF"
+    assert registration_calls[0][1][0][0]["external_id"] == external_id
+    assert registration_calls[0][1][0][1] == [{
+        "chunk_index": 0,
+        "text": record["text"],
+        "locator": record["locator"],
+    }]
+    saved = json.loads((output_dir / "sif-test.jsonl").read_text(encoding="utf-8"))
+    assert saved["id"] == str(uuid5(NAMESPACE_URL, f"SIF:{external_id}:0"))
+    assert saved["payload"]["source_type"] == "SIF"
+    assert saved["payload"]["text"] == record["text"]
+    assert saved["payload"]["accident_type"] == ["FIRE"]
+    assert saved["payload"]["kb_source_id"] == 41
+    assert saved["payload"]["kb_chunk_id"] == 101
+
+
+def test_save_local_chunk_file_requires_passing_validation(monkeypatch, tmp_path):
+    _configure_environment(monkeypatch)
+    chunk_dir = tmp_path / "law"
+    chunk_dir.mkdir()
+    monkeypatch.setenv("LOCAL_CHUNK_DIR", str(chunk_dir))
+    (chunk_dir / "05_chunks.jsonl").write_text("{}\n", encoding="utf-8")
+    (chunk_dir / "06_validation.json").write_text(
+        json.dumps({"ok": False, "summary": {"chunks": 1}}),
+        encoding="utf-8",
+    )
+
+    response = TestClient(ingest_main.app).post(
+        "/ingest/vectors/local/file",
+        headers={"Authorization": "Bearer ingest-token"},
+        json={"dataset_id": "law-local", "chunk_file": "05_chunks.jsonl"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "청크 검증을 통과하지 못했습니다."}
+
+
+def test_load_local_vectors_validates_and_upserts_qdrant_points(monkeypatch, tmp_path):
+    _configure_environment(monkeypatch)
+    monkeypatch.setenv("LOCAL_VECTOR_DIR", str(tmp_path))
+    point = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "vector": {
+            "dense": [0.0] * 1024,
+            "sparse": {"indices": [7], "values": [0.5]},
+        },
+        "payload": {
+            "collection": "kb_guides",
+            "source_type": "LAW",
+            "site_id": 0,
+            "flagged": False,
+            "text": "테스트 법령 조문",
+            "kb_source_id": 1,
+            "kb_chunk_id": 2,
+        },
+    }
+    (tmp_path / "guide-test.jsonl").write_text(
+        json.dumps(point) + "\n",
+        encoding="utf-8",
+    )
+    upsert_calls = []
+    validation_calls = []
+    finalization_calls = []
+    monkeypatch.setattr(
+        local_vectors,
+        "upsert_points",
+        lambda settings, collection, points, *, write_api_key: upsert_calls.append(
+            (collection, points, write_api_key)
+        ),
+    )
+    monkeypatch.setattr(
+        local_vectors,
+        "validate_chunks",
+        lambda settings, collection, chunks: validation_calls.append((collection, chunks)),
+    )
+    monkeypatch.setattr(
+        local_vectors,
+        "mark_sources_embedded",
+        lambda settings, counts, model: finalization_calls.append((counts, model)),
+    )
+
+    response = TestClient(ingest_main.app).post(
+        "/ingest/vectors/local/load",
+        headers={"Authorization": "Bearer ingest-token"},
+        json={"dataset_id": "guide-test", "collection": "kb_guides"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "indexed": 1,
+        "collection": "kb_guides",
+        "dataset_id": "guide-test",
+        "unlinked_payloads": 0,
+        "finalized_sources": 1,
+    }
+    assert validation_calls[0][0] == "kb_guides"
+    assert validation_calls[0][1][0].point_id == point["id"]
+    assert finalization_calls == [({1: 1}, "BAAI/bge-m3")]
+    assert upsert_calls[0][0] == "kb_guides"
+    assert upsert_calls[0][1] == [point]
+    assert upsert_calls[0][2] == "qdrant-write-key"
+
+
+def test_ingest_finalizes_sources_after_ledger_check_and_index(monkeypatch):
+    _configure_environment(monkeypatch)
+    body = _request_body()
+    body["finalize_sources"] = [{"source_id": 1, "chunk_count": 1}]
+    calls = []
+
+    monkeypatch.setattr(
+        ingest_chunks,
+        "validate_chunks",
+        lambda settings, collection, chunks: calls.append("validate"),
+    )
+    monkeypatch.setattr(
+        ingest_chunks,
+        "index_chunks",
+        lambda settings, collection, chunks, *, write_api_key: calls.append("index") or len(chunks),
+    )
+    monkeypatch.setattr(
+        ingest_chunks,
+        "mark_sources_embedded",
+        lambda settings, expected_chunk_counts, embedding_model: calls.append(
+            ("embedded", expected_chunk_counts, embedding_model)
+        ),
+    )
+
+    client = TestClient(ingest_main.app)
+    response = client.post(
+        "/ingest/chunks",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 200
+    assert calls == ["validate", "index", ("embedded", {1: 1}, "BAAI/bge-m3")]
+
+
+def test_ingest_rejects_finalization_for_source_not_in_batch(monkeypatch):
+    _configure_environment(monkeypatch)
+    body = _request_body()
+    body["finalize_sources"] = [{"source_id": 2, "chunk_count": 1}]
+
+    response = TestClient(ingest_main.app).post(
+        "/ingest/chunks",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 422
+
+
+def test_ingest_near_miss_request_contract(monkeypatch):
+    _configure_environment(monkeypatch)
+    calls = []
+
+    def fake_index_chunks(settings, collection, chunks, *, write_api_key):
+        calls.append((collection, chunks))
+        return len(chunks)
+
+    monkeypatch.setattr(ingest_chunks, "index_chunks", fake_index_chunks)
+    client = TestClient(ingest_main.app)
+    body = _near_miss_request_body()
+
+    response = client.post(
+        "/ingest/chunks",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"indexed": 1}
+    collection, chunks = calls[0]
+    assert collection == "kb_accidents"
+    assert chunks[0].point_id == body["chunks"][0]["point_id"]
+    assert chunks[0].payload == body["chunks"][0]["payload"]
+    assert chunks[0].text == chunks[0].payload["text"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda chunk: chunk["payload"].update(flagged=True),
+        lambda chunk: chunk["payload"].update(kb_chunk_id=13),
+        lambda chunk: chunk.update(point_id="00000000-0000-0000-0000-000000000001"),
+        lambda chunk: chunk["payload"].update(year=2025),
+        lambda chunk: chunk["payload"].update(year=True),
+        lambda chunk: chunk["payload"].update(ghs=["H330"]),
+        lambda chunk: chunk["payload"].update(text="payload와 다른 원문"),
+        lambda chunk: chunk["payload"].update(accident_type="FALL"),
+    ],
+)
+def test_ingest_near_miss_rejects_contract_mismatches(monkeypatch, mutate):
+    _configure_environment(monkeypatch)
+    body = _near_miss_request_body()
+    mutate(body["chunks"][0])
+    client = TestClient(ingest_main.app)
+
+    response = client.post(
+        "/ingest/chunks",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 422
+
+
+def test_delete_points_authenticates_and_deletes(monkeypatch):
+    _configure_environment(monkeypatch)
+    calls = []
+
+    def fake_delete_points(settings, collection, point_ids, *, write_api_key):
+        calls.append((settings, collection, point_ids, write_api_key))
+
+    monkeypatch.setattr(ingest_points, "delete_qdrant_points", fake_delete_points)
+    client = TestClient(ingest_main.app)
+    point_ids = [
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+    ]
+
+    response = client.post(
+        "/ingest/points/delete",
+        headers={"Authorization": "Bearer ingest-token"},
+        json={"collection": "kb_accidents", "point_ids": point_ids},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2}
+    settings, collection, deleted_ids, write_api_key = calls[0]
+    assert settings.qdrant_url == "http://qdrant:6333"
+    assert collection == "kb_accidents"
+    assert deleted_ids == point_ids
+    assert write_api_key == "qdrant-write-key"
+
+
+def test_delete_points_requires_authentication(monkeypatch):
+    _configure_environment(monkeypatch)
+    client = TestClient(ingest_main.app)
+
+    response = client.post(
+        "/ingest/points/delete",
+        json={"collection": "kb_accidents", "point_ids": [1]},
+    )
+
+    assert response.status_code == 401
+
+
+def test_delete_points_rejects_invalid_or_unbounded_requests(monkeypatch):
+    _configure_environment(monkeypatch)
+    client = TestClient(ingest_main.app)
+    headers = {"Authorization": "Bearer ingest-token"}
+
+    invalid_id = client.post(
+        "/ingest/points/delete",
+        headers=headers,
+        json={"collection": "kb_accidents", "point_ids": ["not-a-uuid"]},
+    )
+    too_many_ids = client.post(
+        "/ingest/points/delete",
+        headers=headers,
+        json={"collection": "kb_accidents", "point_ids": list(range(33))},
+    )
+
+    assert invalid_id.status_code == 422
+    assert too_many_ids.status_code == 422
+
+
+def test_rag_settings_strips_secret_whitespace(monkeypatch):
+    _configure_environment(monkeypatch)
+    monkeypatch.setenv("EMBEDDING_API_KEY", "embedding-key\r")
+    monkeypatch.setenv("QDRANT_READ_ONLY_API_KEY", "reader-key\r")
+
+    from app.rag.config import RagSettings
+
+    settings = RagSettings.from_env()
+
+    assert settings.embedding_api_key == "embedding-key"
+    assert settings.qdrant_api_key == "reader-key"
+
+
+def test_ingest_chunks_rejects_missing_token(monkeypatch):
+    _configure_environment(monkeypatch)
+    client = TestClient(ingest_main.app)
+
+    response = client.post("/ingest/chunks", json=_request_body())
+
+    assert response.status_code == 401
+
+
+def test_ingest_chunks_rejects_invalid_qdrant_point_id(monkeypatch):
+    _configure_environment(monkeypatch)
+    body = _request_body()
+    body["chunks"][0]["point_id"] = "guide-chunk-1"
+    client = TestClient(ingest_main.app)
+
+    response = client.post(
+        "/ingest/chunks",
+        headers={"Authorization": "Bearer ingest-token"},
+        json=body,
+    )
+
+    assert response.status_code == 422
+
+
+def test_index_chunks_embeds_and_upserts_dense_points(monkeypatch):
+    from app.rag import indexing
+    from app.rag.config import RagSettings
+    from app.rag.embedding import HybridEmbedding, SparseVector
+
+    settings = RagSettings(
+        embedding_url="http://embedding/v1/embeddings",
+        qdrant_url="http://qdrant:6333",
+        embedding_model="BAAI/bge-m3",
+        embedding_dim=2,
+        timeout_seconds=5,
+        embedding_api_key=None,
+        qdrant_api_key=None,
+    )
+    calls = []
+    monkeypatch.setattr(
+        indexing,
+        "embed_texts",
+        lambda settings, texts: [
+            HybridEmbedding([0.6, 0.8], SparseVector([], [])) for _ in texts
+        ],
+    )
+    monkeypatch.setattr(
+        indexing,
+        "upsert_points",
+        lambda settings, collection, points, *, write_api_key: calls.append(
+            (collection, points, write_api_key)
+        ),
+    )
+
+    chunk = indexing.IndexableChunk(
+        point_id="00000000-0000-0000-0000-000000000001",
+        text="법령 조문 테스트",
+        payload={"source_type": "LAW", "site_id": 0},
+    )
+
+    assert indexing.index_chunks(settings, "kb_guides", [chunk], write_api_key="writer") == 1
+    assert calls[0][0] == "kb_guides"
+    assert calls[0][1][0]["vector"] == {"dense": [0.6, 0.8]}
+    assert calls[0][2] == "writer"
+
+
+def test_delete_points_sends_qdrant_points_selector(monkeypatch):
+    from app.rag import qdrant
+    from app.rag.config import RagSettings
+
+    settings = RagSettings(
+        embedding_url="http://embedding/v1/embeddings",
+        qdrant_url="http://qdrant:6333",
+        embedding_model="BAAI/bge-m3",
+        embedding_dim=2,
+        timeout_seconds=5,
+        embedding_api_key=None,
+        qdrant_api_key=None,
+    )
+    calls = []
+
+    def fake_post_json(url, body, headers, timeout, service_name):
+        calls.append((url, body, headers, timeout, service_name))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(qdrant, "post_json", fake_post_json)
+    point_ids = ["00000000-0000-0000-0000-000000000001", 7]
+
+    qdrant.delete_points(settings, "kb_accidents", point_ids, write_api_key="writer")
+
+    url, body, headers, timeout, service_name = calls[0]
+    assert url == "http://qdrant:6333/collections/kb_accidents/points/delete?wait=true"
+    assert body == {"points": point_ids}
+    assert headers["api-key"] == "writer"
+    assert timeout == 5
+    assert service_name == "Qdrant 삭제"
+
+
+def test_delete_json_uses_http_delete_with_points_body(monkeypatch):
+    from app.rag import http
+
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b'{"status":"ok"}'
+
+    def fake_urlopen(request, timeout):
+        calls.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(http, "urlopen", fake_urlopen)
+
+    response = http.delete_json(
+        "http://qdrant:6333/collections/kb_accidents/points?wait=true",
+        {"points": [1]},
+        {"api-key": "writer"},
+        5,
+        "Qdrant 삭제",
+    )
+
+    request, timeout = calls[0]
+    assert response == {"status": "ok"}
+    assert request.get_method() == "DELETE"
+    assert json.loads(request.data) == {"points": [1]}
+    assert request.get_header("Api-key") == "writer"
+    assert timeout == 5
+
+
+def test_catalog_validates_chunk_identity_and_marks_expected_count(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.rag import catalog
+    from app.rag.config import RagSettings
+    from app.rag.errors import RagBackendError
+    from app.rag.indexing import IndexableChunk
+
+    point_id = "00000000-0000-5000-8000-000000000001"
+    executed = []
+
+    class Cursor:
+        query = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def execute(self, query, params):
+            self.query = query
+            executed.append((query, params))
+
+        def fetchall(self):
+            if "LEFT JOIN kb_chunks" in self.query:
+                return [(1, 2)]
+            return [(2, 1, "kb_guides", point_id, "법령 조문", None, "LAW", None, False)]
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    class MySQLError(Exception):
+        pass
+
+    connection = Connection()
+    driver = SimpleNamespace(
+        MySQLError=MySQLError,
+        connect=lambda **kwargs: connection,
+    )
+    monkeypatch.setattr(catalog, "_mysql_driver", lambda: driver)
+    settings = RagSettings(
+        embedding_url="http://embedding",
+        qdrant_url="http://qdrant:6333",
+        embedding_model="BAAI/bge-m3",
+        embedding_dim=2,
+        timeout_seconds=5,
+        embedding_api_key=None,
+        qdrant_api_key=None,
+        kb_db_host="mysql",
+        kb_ingest_password="secret",
+    )
+    chunk = IndexableChunk(
+        point_id=point_id,
+        text="법령 조문",
+        payload={
+            "kb_source_id": 1,
+            "kb_chunk_id": 2,
+            "source_type": "LAW",
+            "site_id": 0,
+            "flagged": False,
+            "text": "법령 조문",
+        },
+    )
+
+    catalog.validate_chunks(settings, "kb_guides", [chunk])
+    with pytest.raises(RagBackendError, match="청크 수"):
+        catalog.mark_sources_embedded(settings, {1: 3}, "BAAI/bge-m3")
+
+    assert executed[0][1] == [2]
+    assert executed[1][1] == [1]
+    assert connection is not None
+
+
+def test_catalog_stores_public_source_site_id_as_null(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.rag import catalog
+    from app.rag.config import RagSettings
+
+    executed = []
+
+    class Cursor:
+        query = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def execute(self, query, params):
+            self.query = query
+            executed.append((query, params))
+
+        def fetchone(self):
+            return (42,)
+
+        def fetchall(self):
+            if "qdrant_point_id" in self.query:
+                return []
+            return [(101, 0)]
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    class MySQLError(Exception):
+        pass
+
+    connection = Connection()
+    driver = SimpleNamespace(MySQLError=MySQLError, connect=lambda **kwargs: connection)
+    monkeypatch.setattr(catalog, "_mysql_driver", lambda: driver)
+    settings = RagSettings(
+        embedding_url="http://embedding",
+        qdrant_url="http://qdrant:6333",
+        embedding_model="BAAI/bge-m3",
+        embedding_dim=2,
+        timeout_seconds=5,
+        embedding_api_key=None,
+        qdrant_api_key=None,
+        kb_db_host="mysql",
+        kb_ingest_password="secret",
+    )
+
+    registered = catalog.register_sources_chunks(
+        settings,
+        "kb_guides",
+        [
+            (
+                {
+                    "source_type": "LAW",
+                    "external_id": "law-key",
+                    "site_id": 0,
+                    "title": "안전 규칙",
+                    "flagged": False,
+                },
+                [{"chunk_index": 0, "text": "법령 조문", "locator": "제1조"}],
+            )
+        ],
+    )
+
+    assert registered[0].source_id == 42
+    assert registered[0].chunks[0].chunk_id == 101
+    assert executed[0][1][2] is None

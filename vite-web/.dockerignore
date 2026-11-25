@@ -1,0 +1,30 @@
+#### Project documentation and configuration files
+LICENSE
+README.md
+SECURITY.md
+SUPPORT.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+CHANGELOG.md
+
+#### Node.js dependencies default ignore file or dir
+node_modules/
+dist/
+
+#### Environment variables
+.env
+
+#### GitHub and Git related files
+.github/
+.git/
+.gitignore
+
+#### Docker related files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+#### Orchestrator related files
+nginx.compose.conf
+
+orchestration.Dockerfile

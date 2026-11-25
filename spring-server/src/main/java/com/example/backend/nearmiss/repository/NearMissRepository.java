@@ -1,0 +1,48 @@
+package com.example.backend.nearmiss.repository;
+
+import com.example.backend.nearmiss.entity.NearMiss;
+import com.example.backend.nearmiss.entity.NearMissStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+
+public interface NearMissRepository extends JpaRepository<NearMiss, Long> {
+
+    Page<NearMiss> findBySiteIdOrderByOccurredAtDesc(Long siteId, Pageable pageable);
+
+    /** 다른 현장 기록을 못 보게 현장까지 같이 조회 */
+    Optional<NearMiss> findByIdAndSiteId(Long id, Long siteId);
+
+    /** 관련 사고 검색 후보: 현장(·구역), 제목·내용 글자 포함(q 는 소문자 %…%, 없으면 null), 최근 발생 순 */
+    @Query("""
+            select n from NearMiss n
+             where n.siteId = :siteId
+               and (:zoneId is null or n.zoneId = :zoneId)
+               and (:q is null or lower(n.title) like :q escape '!' or lower(n.description) like :q escape '!')
+             order by n.occurredAt desc, n.id desc
+            """)
+    List<NearMiss> search(@Param("siteId") Long siteId, @Param("zoneId") Long zoneId, @Param("q") String q, Pageable pageable);
+
+    /** 같은 구역 최근 아차사고 (시나리오 C 경고). from = 오늘 - sites.near_miss_warn_days */
+    List<NearMiss> findBySiteIdAndZoneIdAndOccurredAtGreaterThanEqualOrderByOccurredAtDesc(
+            Long siteId, Long zoneId, LocalDateTime from);
+
+    /** 사람이 태그를 저장한(REPORTED 가 아닌) 아차사고 번호. siteId 가 null 이면 모든 현장 (RAG 일괄 적재) */
+    @Query("""
+            select n.id from NearMiss n
+             where n.status <> :reported
+               and (:siteId is null or n.siteId = :siteId)
+             order by n.id
+            """)
+    List<Long> findConfirmedIds(@Param("siteId") Long siteId, @Param("reported") NearMissStatus reported);
+
+    /** 그날 아차사고 (일일 안전일지 집계). to 는 다음 날 0시 (미포함) */
+    List<NearMiss> findBySiteIdAndOccurredAtGreaterThanEqualAndOccurredAtLessThanOrderByOccurredAtAscIdAsc(
+            Long siteId, LocalDateTime from, LocalDateTime to);
+}
