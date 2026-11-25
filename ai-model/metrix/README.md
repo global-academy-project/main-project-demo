@@ -1,27 +1,24 @@
-# Prometheus metrics wrapper
+# Metrix Service
 
-This directory provides an isolated Prometheus instrumentation layer for the existing AI FastAPI application.
-It does not modify the existing application entrypoint or dependency manifests.
+> [!NOTE]
+> Korean version: [ai-model-metrix.README.kr.md](../../docs/localization/ai-model-metrix.README.kr.md)
 
-Run locally:
+The Metrix FastAPI service exposes AI metrics and monitoring endpoints.
 
-```powershell
-python -m pip install -r metrix\requirements.txt
-python -m uvicorn metrix.main:app --host 127.0.0.1 --port 60100
-```
-
-The infrastructure Compose configuration builds `python-ai-model` using `metrix/Dockerfile`.
-Rebuild and restart the service from `main-infra-manage\docker` after configuring its
-required environment variables:
+## Local Run
 
 ```powershell
-docker compose up -d --build python-ai-model
+python metrix/main.py
 ```
 
-The existing Prometheus configuration scrapes `python-ai-model:60100/metrics` on the
-Compose network. Check the `python-ai-model` target in Prometheus after it is running.
-Only the AI model service is instrumented by this wrapper; the embedding and ingest
-services need their own instrumentation.
+Run the service with dependencies from `metrix/requirements.txt`.
 
-The metrics are process-local. Run one Uvicorn worker per container; multiple workers
-need Prometheus multiprocess configuration, which this wrapper does not provide.
+## Docker
+
+The infrastructure Compose configuration builds the AI service using `metrix/Dockerfile` or the root multi-stage `ai-model/Dockerfile` target.
+
+Rebuild and restart from `infra-manage/docker` after changing infrastructure configuration.
+
+## Korean Documentation
+
+- [Korean Metrix README](../../docs/localization/ai-model-metrix.README.kr.md)

@@ -11,13 +11,13 @@ Kubernetes 배포는 인프라 저장소에서 함께 관리합니다.
 ## 아키텍처 개요
 
 ```text
-[ main-vite-web ]  ──/api──▶  [ main-server ]  ──▶  [ main-ai-model ]
+[ vite-web ]  ──/api──▶  [ spring-server ]  ──▶  [ ai-model ]
      React 웹                  Spring Boot API         FastAPI AI/RAG
                                      │                       │
                                      ▼                       ▼
                                   MySQL                Qdrant · 임베딩
                                      └──────────┬──────────┘
-                                        [ main-infra-manage ]
+                                        [ infra-manage ]
                                Docker Compose · Kubernetes · DB · 모니터링
 ```
 
@@ -33,10 +33,10 @@ Kubernetes 배포는 인프라 저장소에서 함께 관리합니다.
 
 | 저장소 | 역할 | 기술 스택 |
 |---|---|---|
-| [main-vite-web](../main-vite-web) | 현장 안전관리 React 웹 애플리케이션 | React 19, React Router 7, Vite 8, Node.js 24 |
-| [main-server](../main-server) | 현장 안전관리 API 서버 | Java 17, Spring Boot 4, MySQL, Flyway, JWT |
-| [main-ai-model](../main-ai-model) | AI·임베딩·지식 적재 서비스 | Python 3.12, FastAPI, BGE-M3, Qdrant |
-| [main-infra-manage](../main-infra-manage) | 통합 실행 및 배포 인프라 | Docker Compose, Kubernetes, MySQL, Grafana |
+| [vite-web](../../vite-web) | 현장 안전관리 React 웹 애플리케이션 | React 19, React Router 7, Vite 8, Node.js 24 |
+| [spring-server](../../spring-server) | 현장 안전관리 API 서버 | Java 17, Spring Boot 4, MySQL, Flyway, JWT |
+| [ai-model](../../ai-model) | AI·임베딩·지식 적재 서비스 | Python 3.12, FastAPI, BGE-M3, Qdrant |
+| [infra-manage](../../infra-manage) | 통합 실행 및 배포 인프라 | Docker Compose, Kubernetes, MySQL, Grafana |
 
 ## 서비스와 포트
 
@@ -55,31 +55,32 @@ Kubernetes 배포는 인프라 저장소에서 함께 관리합니다.
 네 저장소가 같은 상위 디렉터리에 있어야 합니다.
 
 ```text
-main-infra-manage
-main-vite-web
-main-server
-main-ai-model
+main-project-demo/
+├── vite-web/
+├── spring-server/
+├── ai-model/
+└── infra-manage/
 ```
 
-`main-infra-manage/docker/.env`를 만들고 필요한 변수와 비밀 값을 입력한 뒤,
-인프라 저장소 루트에서 Compose를 실행합니다.
+`infra-manage/docker/.env`를 만들고 필요한 변수와 비밀 값을 입력한 뒤,
+인프라 프로젝트 루트에서 Compose를 실행합니다.
 
 ```powershell
 docker compose --env-file .\docker\.env -f .\docker\docker-compose.yml up -d --build
 ```
 
 필수 환경 변수, 컨테이너 간 연결 주소, 초기화 작업은
-[main-infra-manage의 Docker 실행 가이드](../main-infra-manage/docker/README.md)를
+[infra-manage의 Docker 실행 가이드](../../infra-manage/docker/README.md)를
 참고하세요.
 
 ## 저장소별 개발 안내
 
 각 저장소를 개별적으로 개발·테스트하려면 해당 저장소의 README를 참고하세요.
 
-- 웹: [main-vite-web/README.md](../main-vite-web/README.md) — `npm ci` 후 `npm run dev`
-- 서버: [main-server/README.md](../main-server/README.md) — `.\gradlew.bat bootRun`
-- AI: [main-ai-model/README.md](../main-ai-model/README.md) — `.venv` 생성 후 `uvicorn`
-- 인프라: [main-infra-manage/README.md](../main-infra-manage/README.md) — Compose·Kubernetes
+- 웹: [vite-web/README.md](../../vite-web/README.md) — `npm ci` 후 `npm run dev`
+- 서버: [spring-server/README.md](../../spring-server/README.md) — `\.\gradlew.bat bootRun`
+- AI: [ai-model/README.md](../../ai-model/README.md) — `.venv` 생성 후 `uvicorn`
+- 인프라: [infra-manage/README.md](../../infra-manage/README.md) — Compose·Kubernetes
 
 ## 주의 사항
 

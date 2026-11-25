@@ -12,14 +12,14 @@ Kubernetes deployment are managed in the infrastructure repository.
 ## Architecture Overview
 
 ```text
-[ main-vite-web ]  ──/api──▶  [ main-server ]  ──▶  [ main-ai-model ]
-     React web                 Spring Boot API         FastAPI AI/RAG
-                                     │                       │
-                                     ▼                       ▼
-                                  MySQL                Qdrant · Embedding
-                                     └──────────┬──────────┘
-                                        [ main-infra-manage ]
-                               Docker Compose · Kubernetes · DB · Monitoring
+[ vite-web ]  ──/api──▶  [ spring-server ]  ──▶  [ ai-model ]
+  React web               Spring Boot API         FastAPI AI/RAG
+                                │                       │
+                                ▼                       ▼
+                             MySQL                Qdrant · Embedding
+                                └──────────┬──────────┘
+                                   [ infra-manage ]
+                          Docker Compose · Kubernetes · DB · Monitoring
 ```
 
 - The web application forwards `/api` requests to the Spring Boot server.
@@ -37,10 +37,10 @@ Kubernetes deployment are managed in the infrastructure repository.
 
 | Repository | Role | Tech stack |
 |---|---|---|
-| [main-vite-web](../main-vite-web) | React web app for field safety management | React 19, React Router 7, Vite 8, Node.js 24 |
-| [main-server](../main-server) | Field safety management API server | Java 17, Spring Boot 4, MySQL, Flyway, JWT |
-| [main-ai-model](../main-ai-model) | AI, embedding, and knowledge ingest services | Python 3.12, FastAPI, BGE-M3, Qdrant |
-| [main-infra-manage](../main-infra-manage) | Integrated run and deployment infrastructure | Docker Compose, Kubernetes, MySQL, Grafana |
+| [vite-web](./vite-web) | React web app for field safety management | React 19, React Router 7, Vite 8, Node.js 24 |
+| [spring-server](./spring-server) | Field safety management API server | Java 17, Spring Boot 4, MySQL, Flyway, JWT |
+| [ai-model](./ai-model) | AI, embedding, and knowledge ingest services | Python 3.12, FastAPI, BGE-M3, Qdrant |
+| [infra-manage](./infra-manage) | Integrated run and deployment infrastructure | Docker Compose, Kubernetes, MySQL, Grafana |
 
 ## Services and Ports
 
@@ -60,13 +60,14 @@ repository's Docker Compose setup. All four repositories must live under the sam
 parent directory.
 
 ```text
-main-infra-manage
-main-vite-web
-main-server
-main-ai-model
+main-project-demo/
+├── vite-web/
+├── spring-server/
+├── ai-model/
+└── infra-manage/
 ```
 
-Create `main-infra-manage/docker/.env` with the required variables and secrets,
+Create `infra-manage/docker/.env` with the required variables and secrets,
 then run Compose from the infrastructure repository root.
 
 ```powershell
@@ -75,16 +76,23 @@ docker compose --env-file .\docker\.env -f .\docker\docker-compose.yml up -d --b
 
 For the required environment variables, inter-container connection addresses, and
 initialization tasks, see the
-[Docker execution guide in main-infra-manage](../main-infra-manage/docker/README.md).
+[Docker execution guide in infra-manage](./infra-manage/docker/README.md).
 
 ## Per-Repository Development
 
 To develop and test each repository individually, refer to its README.
 
-- Web: [main-vite-web/README.md](../main-vite-web/README.md) — `npm ci`, then `npm run dev`
-- Server: [main-server/README.md](../main-server/README.md) — `.\gradlew.bat bootRun`
-- AI: [main-ai-model/README.md](../main-ai-model/README.md) — create `.venv`, then run `uvicorn`
-- Infra: [main-infra-manage/README.md](../main-infra-manage/README.md) — Compose and Kubernetes
+- Web: [vite-web/README.md](./vite-web/README.md) — `npm ci`, then `npm run dev`
+- Server: [spring-server/README.md](./spring-server/README.md) — `\.\gradlew.bat bootRun`
+- AI: [ai-model/README.md](./ai-model/README.md) — create `.venv`, then run `uvicorn`
+- Infra: [infra-manage/README.md](./infra-manage/README.md) — Compose and Kubernetes
+
+## Repository-wide configuration
+
+- [`.gitignore`](./.gitignore) is managed only at the workspace root. Project-specific
+  exclusions are scoped to their project directory.
+- Docker Compose build contexts resolve `vite-web`, `spring-server`, and `ai-model`
+  as sibling directories under `main-project-demo`.
 
 ## Notes
 

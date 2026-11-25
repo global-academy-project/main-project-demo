@@ -1,4 +1,8 @@
-# 계획 단계 모델 비교 측정 (베이스 0.6B vs 1.7B)
+# 계획 단계 모델 비교 측정
+
+> [!NOTE]
+> English version: [Plan Evaluation README](../../ai-model/scripts/plan_eval/README.md)
+ (베이스 0.6B vs 1.7B)
 
 2026-11-16 · B · 시나리오 A 계획 단계(`plan_brief`)에 쓸 모델을 학습 전에 비교하기 위한 측정 묶음이다.
 이 묶음은 **새 파일만** 더한다. 기존 파일은 고치지 않는다. 지우면 원래대로다.
