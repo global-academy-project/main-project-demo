@@ -4,11 +4,29 @@
 > 영문으로 작성된 README는 [main-project-demo](../../README.md)에서 확인하실 수 있습니다.
 
 현장 안전관리 서비스를 구성하는 전체 저장소를 소개하는 상위 프로젝트 문서입니다.
+이 **현장 안전관리 서비스**는 현장 작업자·관리자가 안전 사고를 기록·검토·조치할 수
+있도록 돕는 플랫폼으로, 아차사고 탐지·문서 검색·이미지 인식·음성 입력에 AI를
+활용합니다.
+
 이 서비스는 React 웹, Spring Boot API, Python AI 서비스, 그리고 이들을 연결하는
 인프라 저장소로 구성됩니다. 각 저장소는 독립적으로 개발·배포되며, 로컬 통합과
 Kubernetes 배포는 인프라 저장소에서 함께 관리합니다.
 
+## 핵심 기능
+
+- **안전 운영** — 사용자·권한 관리, 안전·작업 기록, 승인 워크플로, 알림, 감사
+  리포트 (Spring Boot API).
+- **AI 지원** — 로컬 LLM(Qwen 계열) 기반의 AI 에이전트, 아차사고 태깅, 안전 규칙
+  추출.
+- **비전·음성** — 현장 사진 분석(YOLOX-Nano)과 음성 인식(Whisper)으로 손이 자유로운
+  현장 보고 지원.
+- **지식 검색 (RAG)** — 문서 적재·임베딩(BGE-M3)과 Qdrant 기반 벡터 검색.
+- **통합 운영** — Docker Compose 원커맨드 로컬 실행, Kubernetes/Kustomize 배포,
+  Prometheus·Grafana 모니터링.
+
 ## 아키텍처 개요
+
+![시스템 아키텍처](../images/system-architecture.png)
 
 ```text
 [ vite-web ]  ──/api──▶  [ spring-server ]  ──▶  [ ai-model ]
@@ -73,6 +91,24 @@ docker compose --env-file .\docker\.env -f .\docker\docker-compose.yml up -d --b
 [infra-manage의 Docker 실행 가이드](../../infra-manage/docker/README.md)를
 참고하세요.
 
+## 배포·운영
+
+`infra-manage` 저장소는 애플리케이션·데이터 계층을 Docker Compose와
+Kubernetes/Kustomize로 배포하며, API 서버와 AI 컴포넌트의 메트릭·헬스체크를
+Prometheus와 Grafana로 수집합니다.
+
+### 배포·모니터링 개요
+
+![배포·운영 구성](../images/deploy-monitoring.png)
+
+### Docker Compose 구성
+
+![컨테이너 플랫폼 · Docker Compose](../images/docker-compose.png)
+
+### Kubernetes 구성
+
+![컨테이너 플랫폼 · Kubernetes](../images/kubernetes.png)
+
 ## 저장소별 개발 안내
 
 각 저장소를 개별적으로 개발·테스트하려면 해당 저장소의 README를 참고하세요.
@@ -81,6 +117,15 @@ docker compose --env-file .\docker\.env -f .\docker\docker-compose.yml up -d --b
 - 서버: [spring-server/README.md](../../spring-server/README.md) — `\.\gradlew.bat bootRun`
 - AI: [ai-model/README.md](../../ai-model/README.md) — `.venv` 생성 후 `uvicorn`
 - 인프라: [infra-manage/README.md](../../infra-manage/README.md) — Compose·Kubernetes
+
+## 협업 인원
+
+| 이름 | 역할 | GitHub |
+|---|---|---|
+| GEONWOO CHOI | 메인테이너 | [@geonwoo8873](https://github.com/geonwoo8873) |
+| Mingi Choi | 기여자 | [@GreyColor10](https://github.com/GreyColor10) |
+| tmdwls1226 | 기여자 | [@tmdwls1226](https://github.com/tmdwls1226) |
+| 김영민 | 기여자 | [@kymin9118](https://github.com/kymin9118) |
 
 ## 주의 사항
 

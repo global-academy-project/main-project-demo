@@ -3,13 +3,32 @@
 > [!NOTE]
 > A version of the README in Korean can be found at [main-project-demo](./docs/localization/README.kr.md).
 
-Top-level overview of the repositories that make up the field safety management
-service. The service consists of a React web app, a Spring Boot API, Python AI
-services, and an infrastructure repository that ties them together. Each
-repository is developed and deployed independently, while local integration and
-Kubernetes deployment are managed in the infrastructure repository.
+Top-level overview of the repositories that make up the **field safety
+management service** — a platform that helps site operators and managers record,
+review, and act on workplace safety events, augmented by AI for near-miss
+detection, document search, image recognition, and voice input.
+
+The service consists of a React web app, a Spring Boot API, Python AI services,
+and an infrastructure repository that ties them together. Each repository is
+developed and deployed independently, while local integration and Kubernetes
+deployment are managed in the infrastructure repository.
+
+## Key Features
+
+- **Safety operations** — user and permission management, safety/work records,
+  approval workflows, notifications, and audit reports (Spring Boot API).
+- **AI assistance** — an AI agent, near-miss tagging, and safety-rule extraction
+  backed by a local LLM (Qwen family).
+- **Vision and speech** — on-site image analysis (YOLOX-Nano) and speech
+  transcription (Whisper) for hands-free field reporting.
+- **Knowledge search (RAG)** — document ingestion and embedding (BGE-M3) with
+  vector search over Qdrant.
+- **Integrated operations** — one-command local run via Docker Compose, a
+  Kubernetes/Kustomize deployment, and Prometheus + Grafana monitoring.
 
 ## Architecture Overview
+
+![System Architecture](./docs/images/system-architecture.png)
 
 ```text
 [ vite-web ]  ──/api──▶  [ spring-server ]  ──▶  [ ai-model ]
@@ -78,6 +97,24 @@ For the required environment variables, inter-container connection addresses, an
 initialization tasks, see the
 [Docker execution guide in infra-manage](./infra-manage/docker/README.md).
 
+## Deployment and Operations
+
+The `infra-manage` repository deploys the application and data layers via Docker
+Compose and Kubernetes/Kustomize, and collects metrics and health checks from the
+API server and AI components through Prometheus and Grafana.
+
+### Deployment and monitoring overview
+
+![Deploy & Monitoring](./docs/images/deploy-monitoring.png)
+
+### Docker Compose topology
+
+![Container Platform · Docker Compose](./docs/images/docker-compose.png)
+
+### Kubernetes topology
+
+![Container Platform · Kubernetes](./docs/images/kubernetes.png)
+
 ## Per-Repository Development
 
 To develop and test each repository individually, refer to its README.
@@ -93,6 +130,15 @@ To develop and test each repository individually, refer to its README.
   exclusions are scoped to their project directory.
 - Docker Compose build contexts resolve `vite-web`, `spring-server`, and `ai-model`
   as sibling directories under `main-project-demo`.
+
+## Collaborators
+
+| Name | Role | GitHub |
+|---|---|---|
+| GEONWOO CHOI | Maintainer | [@geonwoo8873](https://github.com/geonwoo8873) |
+| Mingi Choi | Contributor | [@GreyColor10](https://github.com/GreyColor10) |
+| tmdwls1226 | Contributor | [@tmdwls1226](https://github.com/tmdwls1226) |
+| 김영민 (Youngmin Kim) | Contributor | [@kymin9118](https://github.com/kymin9118) |
 
 ## Notes
 
