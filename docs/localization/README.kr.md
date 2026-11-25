@@ -26,7 +26,7 @@ Kubernetes 배포는 인프라 저장소에서 함께 관리합니다.
 
 ## 아키텍처 개요
 
-![시스템 아키텍처](../images/system-architecture.png)
+![시스템 아키텍처](../images/system-architecture.kr.png)
 
 ```text
 [ vite-web ]  ──/api──▶  [ spring-server ]  ──▶  [ ai-model ]
@@ -99,15 +99,15 @@ Prometheus와 Grafana로 수집합니다.
 
 ### 배포·모니터링 개요
 
-![배포·운영 구성](../images/deploy-monitoring.png)
+![배포·운영 구성](../images/deploy-monitoring.kr.png)
 
 ### Docker Compose 구성
 
-![컨테이너 플랫폼 · Docker Compose](../images/docker-compose.png)
+![컨테이너 플랫폼 · Docker Compose](../images/docker-compose.kr.png)
 
 ### Kubernetes 구성
 
-![컨테이너 플랫폼 · Kubernetes](../images/kubernetes.png)
+![컨테이너 플랫폼 · Kubernetes](../images/kubernetes.kr.png)
 
 ## 저장소별 개발 안내
 
