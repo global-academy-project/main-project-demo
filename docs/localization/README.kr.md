@@ -28,24 +28,39 @@ Kubernetes 배포는 인프라 저장소에서 함께 관리합니다.
 
 ![시스템 아키텍처](../images/system-architecture.kr.png)
 
-```text
-[ vite-web ]  ──/api──▶  [ spring-server ]  ──▶  [ ai-model ]
-     React 웹                  Spring Boot API         FastAPI AI/RAG
-                                     │                       │
-                                     ▼                       ▼
-                                  MySQL                Qdrant · 임베딩
-                                     └──────────┬──────────┘
-                                        [ infra-manage ]
-                               Docker Compose · Kubernetes · DB · 모니터링
-```
+시스템은 세 개의 계층으로 나뉘며, 웹 앱은 AI 컴포넌트나 데이터베이스에 직접
+접근하지 않습니다. 모든 요청은 API 서버를 거칩니다.
 
-- 웹 애플리케이션은 `/api` 요청을 Spring Boot 서버로 전달합니다.
-- Spring Boot 서버는 사용자/권한, 안전 기록, 결재, 알림, 감사 보고서 API를 제공하며
-  AI 기능이 필요할 때 AI 서비스를 호출합니다.
-- AI 서비스는 에이전트, 아차사고 태깅, 규칙 추출, 사진 인식, 음성 전사 기능과
-  RAG 검색(임베딩 + Qdrant)을 제공합니다.
-- 인프라 저장소는 네 서비스를 로컬 Compose와 Kubernetes로 연결하고, 데이터베이스
-  초기화·마이그레이션과 모니터링 구성을 관리합니다.
+### 계층 구성
+
+| 계층 | 구성 요소 | 역할 |
+|---|---|---|
+| 애플리케이션 | `vite-web` (Nginx로 서빙되는 React SPA), `spring-server` (Spring Boot 4 REST API) | UI, 인증·권한, 비즈니스 로직, AI 호출 조율 |
+| AI 컴포넌트 | Qwen 계열 로컬 LLM, Whisper, YOLOX-Nano, 지식 적재 API, BGE-M3 임베딩 API | 에이전트 응답, 음성 인식, 현장 사진 분석, 문서 적재·임베딩 |
+| 데이터 | MySQL 8.4, Qdrant | 관계형 데이터(사용자·기록·결재·감사)와 벡터 검색 인덱스 |
+
+선택적으로 사용하는 SMTP 메일 서버가 유일한 외부 의존성이며, 알림 발송에 쓰입니다.
+
+### 요청 흐름
+
+1. **일반 API 요청** — 운영자·관리자가 React 앱을 사용하면 `/api`로 REST 요청이
+   전송되고, 웹 계층이 이를 Spring Boot 서버로 프록시합니다. 서버는 MySQL을
+   읽고 씁니다(JDBC, 스키마는 Flyway로 관리).
+2. **AI 기능** — 에이전트·음성 인식·비전 요청은 Spring Boot 서버가 해당 AI
+   컴포넌트를 호출합니다. 로컬 LLM은 Qdrant의 벡터 검색(RAG)으로 질문에
+   답합니다.
+3. **지식 적재** — Spring Boot 서버가 지식 입력을 지식 적재 API로 보내면, 이 API가
+   BGE-M3 임베딩 API로 문서를 임베딩하고 벡터는 Qdrant에, 메타데이터는 MySQL에
+   저장합니다.
+4. **알림** — Spring Boot 서버는 필요 시 SMTP 메일 서버를 통해 알림을 보낼 수
+   있습니다.
+
+### 배포와 관측
+
+`infra-manage`가 서비스들을 하나로 연결합니다. Docker Compose는 전체 스택을
+로컬에서 실행하고, Kubernetes/Kustomize는 클러스터 배포를 담당하며, Prometheus가
+API 서버와 AI 컴포넌트의 메트릭·헬스체크를 수집해 Grafana 대시보드로 보여줍니다.
+컨테이너 구성도는 [배포·운영](#배포운영)을 참고하세요.
 
 ## 저장소 구성
 
@@ -101,13 +116,51 @@ Prometheus와 Grafana로 수집합니다.
 
 ![배포·운영 구성](../images/deploy-monitoring.kr.png)
 
+`infra-manage`는 동일한 배포 대상(애플리케이션 계층의 웹·API 서버·AI 컴포넌트,
+데이터 계층의 MySQL·Qdrant)에 대해 세 가지 도구를 제공합니다.
+
+- **Docker Compose** — 로컬 및 단일 호스트 통합 실행.
+- **Kubernetes / Kustomize** — 운영 환경을 가정한 클러스터 배포.
+- **Prometheus → Grafana** — API 서버와 AI 컴포넌트의 메트릭·헬스체크를 수집해
+  시각화.
+
 ### Docker Compose 구성
 
 ![컨테이너 플랫폼 · Docker Compose](../images/docker-compose.kr.png)
 
+- **네트워크** — 모든 서비스는 Compose 기본 브리지 네트워크를 공유합니다. 호스트에
+  게시되는 포트는 웹(`:50001`), Grafana(`:3000`), Prometheus(`:9090`)뿐이며, API
+  서버·AI API·임베딩·적재·MySQL·Qdrant는 네트워크 내부에서만 접근할 수 있습니다.
+- **영속성** — MySQL(`database-data`), Qdrant(`qdrant-data`), 임베딩 모델 캐시, AI
+  모델 캐시, Grafana, Prometheus는 이름 있는 볼륨으로 상태를 유지합니다.
+- **일회성 작업** — `kb-migrator`는 Flyway 스키마 마이그레이션을, `qdrant-init`은
+  Qdrant 컬렉션·인덱스 초기화를 수행하며 둘 다 `restart: no`입니다.
+- **기동 순서** (`depends_on`) — MySQL·Qdrant 정상 → Spring Boot,
+  `qdrant-init` 완료 + 임베딩 정상 → Python AI, MySQL 정상 → `kb-migrator`,
+  `qdrant-init` 완료 → `kb-ingest`.
+- **설정** — 접속 정보는 `.env` 파일의 `${...}` 변수로 컨테이너에 주입됩니다.
+- **모니터링** — Grafana와 Prometheus는 로컬 전용입니다.
+
 ### Kubernetes 구성
 
 ![컨테이너 플랫폼 · Kubernetes](../images/kubernetes.kr.png)
+
+- **환경** — Docker Desktop의 Kubernetes 클러스터에서 검증했습니다.
+- **워크로드** — 상태가 없는 서비스는 Deployment로 실행합니다: Vite 웹(레플리카
+  2개), Spring Boot, Python AI, 임베딩, `kb-ingest`, Grafana, Prometheus. MySQL과
+  Qdrant(headless)는 StatefulSet으로 실행합니다.
+- **노출** — 웹과 API는 NodePort(`30080`, `30081`)로 노출됩니다. 나머지는
+  `mysql-service:3306`, `ai-model-service:60100`, `qdrant-service:6333`,
+  `embedding-service:60110`, `ingest-service:8001`처럼 클러스터 내부 Service를
+  사용합니다.
+- **스토리지** — PersistentVolumeClaim(ReadWriteOnce)이 MySQL·Qdrant(각 5Gi),
+  Grafana·Prometheus(각 2Gi), 모델·임베딩 캐시를 뒷받침합니다.
+- **Job** — `mysql-migration`(Flyway, ConfigMap의 V1/V2 SQL 사용)과
+  `qdrant-init`(`backoffLimit: 10`)이 일회성으로 실행됩니다.
+- **공통 설정** — `common-*-config` ConfigMap 7개(`envFrom`)와 `common-*-secret`
+  Secret 8개(`secretKeyRef`)를 워크로드에 주입합니다.
+- **모니터링** — Prometheus는 `ai-model`의 `/metrics`와 자기 자신을 수집하고,
+  Grafana는 Prometheus를 데이터 소스로 사용합니다.
 
 ## 저장소별 개발 안내
 

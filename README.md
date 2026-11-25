@@ -30,27 +30,41 @@ deployment are managed in the infrastructure repository.
 
 ![System Architecture](./docs/images/system-architecture.png)
 
-```text
-[ vite-web ]  ──/api──▶  [ spring-server ]  ──▶  [ ai-model ]
-  React web               Spring Boot API         FastAPI AI/RAG
-                                │                       │
-                                ▼                       ▼
-                             MySQL                Qdrant · Embedding
-                                └──────────┬──────────┘
-                                   [ infra-manage ]
-                          Docker Compose · Kubernetes · DB · Monitoring
-```
+The system is split into three layers, and the web app never talks to the AI
+components or databases directly. All traffic goes through the API server.
 
-- The web application forwards `/api` requests to the Spring Boot server.
-- The Spring Boot server provides APIs for users/permissions, safety records,
-  approvals, notifications, and audit reports, and calls the AI services when AI
-  features are needed.
-- The AI services provide agent, near-miss tagging, rule extraction, image
-  recognition, and speech transcription features, along with RAG search
-  (embedding + Qdrant).
-- The infrastructure repository connects the four services via local Compose and
-  Kubernetes, and manages database initialization/migration and monitoring
-  configuration.
+### Layers
+
+| Layer | Components | Responsibility |
+|---|---|---|
+| Application | `vite-web` (React SPA served by Nginx), `spring-server` (Spring Boot 4 REST API) | UI, authentication/permissions, business logic, and orchestration of AI calls |
+| AI components | Qwen-series local LLM, Whisper, YOLOX-Nano, Knowledge Ingest API, BGE-M3 Embedding API | Agent answers, speech-to-text, site photo analysis, document ingestion and embedding |
+| Data | MySQL 8.4, Qdrant | Relational data (users, records, approvals, audit) and vector search index |
+
+An optional SMTP mail server is the only external dependency, used for
+notifications.
+
+### Request flows
+
+1. **Standard API request** — An operator or admin uses the React app, which sends
+   REST requests to `/api`. The web tier proxies them to the Spring Boot server,
+   which reads and writes MySQL (JDBC, with schema managed by Flyway).
+2. **AI features** — For agent, speech-to-text, and vision requests, the Spring
+   Boot server calls the matching AI component. The local LLM answers questions
+   with RAG by searching vectors in Qdrant.
+3. **Knowledge ingestion** — The Spring Boot server sends knowledge input to the
+   Knowledge Ingest API, which asks the BGE-M3 Embedding API to embed the
+   documents, then stores vectors in Qdrant and metadata in MySQL.
+4. **Notifications** — The Spring Boot server can optionally send alerts through
+   the SMTP mail server.
+
+### Deployment and observability
+
+`infra-manage` ties the services together. Docker Compose runs the whole stack
+locally, Kubernetes/Kustomize handles cluster deployment, and Prometheus scrapes
+metrics and health checks from the API server and AI components for Grafana
+dashboards. See [Deployment and Operations](#deployment-and-operations) for the
+container topology diagrams.
 
 ## Repositories
 
@@ -107,13 +121,56 @@ API server and AI components through Prometheus and Grafana.
 
 ![Deploy & Monitoring](./docs/images/deploy-monitoring.png)
 
+`infra-manage` provides three tools for the same set of deploy targets (the web
+app, API server, and AI components in the application layer, plus MySQL and
+Qdrant in the data layer):
+
+- **Docker Compose** — local and single-host integrated runs.
+- **Kubernetes / Kustomize** — production-style cluster deployment.
+- **Prometheus → Grafana** — collects metrics and health checks from the API
+  server and AI components and visualizes them.
+
 ### Docker Compose topology
 
 ![Container Platform · Docker Compose](./docs/images/docker-compose.png)
 
+- **Networking** — All services share the default Compose bridge network. Only the
+  web (`:50001`), Grafana (`:3000`), and Prometheus (`:9090`) are published to the
+  host; the API server, AI API, embedding, ingest, MySQL, and Qdrant are reachable
+  only inside the network.
+- **Persistence** — Named volumes keep state for MySQL (`database-data`), Qdrant
+  (`qdrant-data`), the embedding model cache, the AI model cache, Grafana, and
+  Prometheus.
+- **One-shot jobs** — `kb-migrator` runs Flyway schema migrations and
+  `qdrant-init` creates Qdrant collections and indexes. Both use `restart: no`.
+- **Startup order** (`depends_on`) — MySQL and Qdrant healthy → Spring Boot;
+  `qdrant-init` done and Embedding healthy → Python AI; MySQL healthy →
+  `kb-migrator`; `qdrant-init` done → `kb-ingest`.
+- **Configuration** — Connection details are injected into containers from the
+  `.env` file through `${...}` variables.
+- **Monitoring** — Grafana and Prometheus are for local use only.
+
 ### Kubernetes topology
 
 ![Container Platform · Kubernetes](./docs/images/kubernetes.png)
+
+- **Environment** — Verified on a Docker Desktop Kubernetes cluster.
+- **Workloads** — Stateless services run as Deployments: Vite web (2 replicas),
+  Spring Boot, Python AI, Embedding, `kb-ingest`, Grafana, and Prometheus. MySQL
+  and Qdrant (headless) run as StatefulSets.
+- **Exposure** — The web and API are exposed via NodePort (`30080` and `30081`).
+  Other services use cluster-internal Services such as `mysql-service:3306`,
+  `ai-model-service:60100`, `qdrant-service:6333`, `embedding-service:60110`, and
+  `ingest-service:8001`.
+- **Storage** — PersistentVolumeClaims (ReadWriteOnce) back MySQL and Qdrant
+  (5Gi each), Grafana and Prometheus (2Gi each), and the model/embedding caches.
+- **Jobs** — `mysql-migration` (Flyway, with V1/V2 SQL from a ConfigMap) and
+  `qdrant-init` (`backoffLimit: 10`) run once.
+- **Shared configuration** — Seven `common-*-config` ConfigMaps (via `envFrom`)
+  and eight `common-*-secret` Secrets (via `secretKeyRef`) are injected into the
+  workloads.
+- **Monitoring** — Prometheus scrapes the `ai-model` `/metrics` endpoint and
+  itself, and Grafana reads from Prometheus.
 
 ## Per-Repository Development
 
