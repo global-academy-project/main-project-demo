@@ -1,5 +1,8 @@
 # Main Project
 
+> [!NOTE]
+> A version of the README in Korean can be found at [main-project-demo](./docs/localization/README.kr.md).
+
 Top-level overview of the repositories that make up the field safety management
 service. The service consists of a React web app, a Spring Boot API, Python AI
 services, and an infrastructure repository that ties them together. Each

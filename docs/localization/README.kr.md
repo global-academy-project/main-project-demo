@@ -1,5 +1,8 @@
 # Main Project
 
+> [!NOTE]
+> 영문으로 작성된 README는 [main-project-demo](../../README.md)에서 확인하실 수 있습니다.
+
 현장 안전관리 서비스를 구성하는 전체 저장소를 소개하는 상위 프로젝트 문서입니다.
 이 서비스는 React 웹, Spring Boot API, Python AI 서비스, 그리고 이들을 연결하는
 인프라 저장소로 구성됩니다. 각 저장소는 독립적으로 개발·배포되며, 로컬 통합과
