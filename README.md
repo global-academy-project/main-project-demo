@@ -266,7 +266,7 @@ To develop and test each repository individually, refer to its README.
 | GEONWOO CHOI | Maintainer | [@geonwoo8873](https://github.com/geonwoo8873) |
 | Mingi Choi | Contributor | [@GreyColor10](https://github.com/GreyColor10) |
 | tmdwls1226 | Contributor | [@tmdwls1226](https://github.com/tmdwls1226) |
-| 김영민 (Youngmin Kim) | Contributor | [@kymin9118](https://github.com/kymin9118) |
+| Youngmin Kim | Contributor | [@kymin9118](https://github.com/kymin9118) |
 
 ## Notes
 
