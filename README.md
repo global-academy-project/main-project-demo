@@ -1,4 +1,4 @@
-# Main Project
+# Field Safety Management Service
 
 > [!NOTE]
 > A version of the README in Korean can be found at [main-project-demo](./docs/localization/README.kr.md).
