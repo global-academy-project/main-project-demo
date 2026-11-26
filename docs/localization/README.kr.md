@@ -1,4 +1,4 @@
-# Main Project
+# 현장 안전 관리 서비스
 
 > [!NOTE]
 > 영문으로 작성된 README는 [main-project-demo](../../README.md)에서 확인하실 수 있습니다.
